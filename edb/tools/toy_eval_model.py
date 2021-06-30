@@ -56,6 +56,7 @@ from typing import *
 
 
 from edb.common import debug
+from edb.common.compiler import SimpleCounter
 from edb import edgeql
 
 from edb.common.ast import NodeVisitor
@@ -256,6 +257,10 @@ def if_(x: Result, bs: Result, y: Result) -> Result:
     return out
 
 
+# For implementing a next() testing function
+NextCounter = SimpleCounter()
+
+
 _BASIS_BINOP_IMPLS: Any = {
     '+': lift(operator.add),
     '-': lift(operator.sub),
@@ -308,6 +313,7 @@ _BASIS_FUNC_IMPLS: Any = {
     'random': lift(random.random),
     'contains': lift(operator.contains),
     'round': lift(round),
+    'next': lift(NextCounter.nextval),  # testing func, not really in std
 }
 
 BASIS_IMPLS: Dict[Tuple[str, str], LiftedFunc] = {
