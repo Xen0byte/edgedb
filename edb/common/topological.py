@@ -137,7 +137,7 @@ def sort_ex(
     ) -> None:
         if item in visiting:
             raise CycleError(
-                f"dependency cycle between {list(visiting)[1]!r} "
+                f"dependency cycle between {list(visiting)[-1]!r} "
                 f"and {item!r}",
                 path=list(visiting)[1:],
             )

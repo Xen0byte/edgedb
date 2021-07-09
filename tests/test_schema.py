@@ -4298,6 +4298,77 @@ class TestGetMigration(tb.BaseSchemaLoadTest):
             }
         """])
 
+    @test.xfail('''
+        Causes a CycleError, which should be converted into a proper
+        InvalidDefinitionError or something like that, but the wording
+        may need some rework to avoid '<QualName default::Foo@val>'.
+    ''')
+    def test_schema_migrations_equivalence_recursive_01(self):
+        self._assert_migration_equivalence([r"""
+            type Foo {
+                link next -> Foo;
+                property val := 1;
+            }
+        """, r"""
+            type Foo {
+                link next -> Foo;
+                property val := 1 + (.next.val ?? 0);
+            }
+        """])
+
+    @test.xfail('''
+        Causes a CycleError, which should be converted into a proper
+        InvalidDefinitionError or something like that, but the wording
+        may need some rework to avoid '<QualName default::Foo@val>'.
+    ''')
+    def test_schema_migrations_equivalence_recursive_02(self):
+        self._assert_migration_equivalence([r"""
+            type Foo {
+                link next -> Bar;
+                property val := 1;
+            }
+
+            type Bar {
+                link next -> Foo;
+                property val := 1;
+            }
+        """, r"""
+            type Foo {
+                link next -> Bar;
+                property val := 1 + (.next.val ?? 0);
+            }
+
+            type Bar {
+                link next -> Foo;
+                property val := 1;
+            }
+        """, r"""
+            type Foo {
+                link next -> Bar;
+                property val := 1 + (.next.val ?? 0);
+            }
+
+            type Bar {
+                link next -> Foo;
+                property val := 1 + (.next.val ?? 0);
+            }
+        """])
+
+    @test.xfail('''
+        Causes a CycleError, which should be converted into a proper
+        InvalidDefinitionError or something like that.
+    ''')
+    def test_schema_migrations_equivalence_recursive_03(self):
+        self._assert_migration_equivalence([r"""
+            function foo(v: int64) -> int64 using (
+                1 + v
+            );
+        """, r"""
+            function foo(v: int64) -> int64 using (
+                0 IF v < 0 ELSE 1 + foo(v -1)
+            );
+        """])
+
     def test_schema_migrations_equivalence_computed_01(self):
         self._assert_migration_equivalence([r"""
             type Foo {
