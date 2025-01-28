@@ -19,10 +19,13 @@
 
 from __future__ import annotations
 
+from typing import Iterable, Sequence
+
 from edb.common import ordered
 
 from .. import common
 from . import base
+from . import tables
 
 
 class Record(type):
@@ -88,13 +91,17 @@ class RecordBase:
 
 
 class CompositeDBObject(base.DBObject):
-    def __init__(self, name, columns=None):
+    def __init__(
+        self,
+        name: Sequence[str],
+        columns: Iterable[tables.Column] | None = None,
+    ):
         super().__init__()
         self.name = name
-        self._columns = ordered.OrderedSet()
+        self._columns: ordered.OrderedSet[tables.Column] = ordered.OrderedSet()
         self.add_columns(columns or [])
 
-    def add_columns(self, iterable):
+    def add_columns(self, iterable: Iterable[tables.Column]):
         self._columns.update(iterable)
 
     @property
@@ -114,17 +121,18 @@ class CompositeAttributeCommand:
 
 
 class AlterCompositeAddAttribute(CompositeAttributeCommand):
-    def code(self, block: base.PLBlock) -> str:
+    def code(self) -> str:
         return (f'ADD {self.get_attribute_term()} '  # type: ignore
-                f'{self.attribute.code(block)}')
+                f'{self.attribute.code()}')
 
-    def generate_extra(self, block: base.PLBlock,
-                       alter: base.CompositeCommandGroup):
-        self.attribute.generate_extra(block, alter)
+    def generate_extra_composite(
+        self, block: base.PLBlock, alter: base.CompositeCommandGroup
+    ) -> None:
+        self.attribute.generate_extra_composite(block, alter)
 
 
 class AlterCompositeDropAttribute(CompositeAttributeCommand):
-    def code(self, block: base.PLBlock) -> str:
+    def code(self) -> str:
         attrname = common.qname(self.attribute.name)
         return f'DROP {self.get_attribute_term()} {attrname}'  # type: ignore
 
@@ -135,7 +143,7 @@ class AlterCompositeAlterAttributeType:
         self.new_type = new_type
         self.cast_expr = cast_expr
 
-    def code(self, block: base.PLBlock) -> str:
+    def code(self) -> str:
         attrterm = self.get_attribute_term()  # type: ignore
         attrname = common.quote_ident(str(self.attribute_name))
         code = f'ALTER {attrterm} {attrname} SET DATA TYPE {self.new_type}'

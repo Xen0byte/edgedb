@@ -51,6 +51,15 @@ Connection settings
 :eql:synopsis:`listen_port -> int16`
   The TCP port the server listens on; defaults to ``5656``.
 
+.. versionadded:: 5.0
+
+    :eql:synopsis:`cors_allow_origins -> multi str`
+      Origins that will be calling the server that need Cross-Origin Resource
+      Sharing (CORS) support. Can use ``*`` to allow any origin. When HTTP
+      clients make a preflight request to the server, the origins allowed here
+      will be added to the ``Access-Control-Allow-Origin`` header in the
+      response.
+
 Resource usage
 --------------
 
@@ -64,6 +73,9 @@ Resource usage
 
 :eql:synopsis:`shared_buffers -> cfg::memory`
   The amount of memory used for shared memory buffers.
+
+:eql:synopsis:`http_max_connections -> int64`
+  The maximum number of concurrent outbound HTTP connections to allow.
 
 Query planning
 --------------
@@ -115,6 +127,22 @@ Client connections
   while in a transaction. Defaults to 10 seconds; set to ``<duration>'0'`` to
   disable the mechanism.
 
+  .. note::
+
+      For ``session_idle_transaction_timeout`` and ``query_execution_timeout``,
+      values under 1ms are rounded down to zero, which will disable the timeout.
+      In order to set a timeout, please set a duration of 1ms or greater.
+
+      ``session_idle_timeout`` can take values below 1ms.
+
 :eql:synopsis:`query_execution_timeout -> std::duration`
   How long an individual query can run before being aborted. A value of
   ``<duration>'0'`` disables the mechanism; it is disabled by default.
+
+  .. note::
+
+      For ``session_idle_transaction_timeout`` and ``query_execution_timeout``,
+      values under 1ms are rounded down to zero, which will disable the timeout.
+      In order to set a timeout, please set a duration of 1ms or greater.
+
+      ``session_idle_timeout`` can take values below 1ms.

@@ -18,9 +18,12 @@
 
 
 from __future__ import annotations
-from typing import Sequence
 
-from typing import *
+from typing import Any, Optional, Sequence, List
+
+import abc
+import collections
+import dataclasses
 
 from edb import errors
 
@@ -31,94 +34,181 @@ from edb.common import exceptions
 from edb.common import markup
 
 
-class SQLSourceGeneratorContext(markup.MarkupExceptionContext):
-    title = 'SQL Source Generator Context'
+def generate(
+    node: pgast.Base,
+    *,
+    indent_with: str = ' ' * 4,
+    add_line_information: bool = False,
+    pretty: bool = True,
+    reordered: bool = False,
+    with_source_map: bool = False,
+) -> SQLSource:
+    # Main entrypoint
 
-    def __init__(
-        self,
-        node: pgast.Base,
-        chunks_generated: Optional[Sequence[str]] = None,
-    ):
-        self.node = node
-        self.chunks_generated = chunks_generated
+    generator = SQLSourceGenerator(
+        opts=codegen.Options(
+            indent_with=indent_with,
+            add_line_information=add_line_information,
+            pretty=pretty,
+        ),
+        reordered=reordered,
+        with_source_map=with_source_map,
+    )
 
-    @classmethod
-    def as_markup(cls: Any, self: Any, *, ctx: Any):  # type: ignore
-        me = markup.elements
+    try:
+        generator.visit(node)
+    except RecursionError:
+        # Don't try to wrap and add context to a recursion error,
+        # since the context might easily be too deeply recursive to
+        # process further down the pipe.
+        raise
+    except GeneratorError as error:
+        ctx = GeneratorContext(node, generator.result)
+        exceptions.add_context(error, ctx)
+        raise
+    except Exception as error:
+        ctx = GeneratorContext(node, generator.result)
+        err = GeneratorError('error while generating SQL source')
+        exceptions.add_context(err, ctx)
+        raise err from error
 
-        body = [
-            me.doc.Section(
-                title='SQL Tree',
-                body=[markup.serialize(self.node, ctx=ctx)],  # type: ignore
-            )
-        ]
+    if with_source_map:
+        assert generator.source_map
 
-        if self.chunks_generated:
-            code = markup.serializer.serialize_code(
-                ''.join(self.chunks_generated), lexer='sql'
-            )
-            body.append(
-                me.doc.Section(
-                    title='SQL generated so far', body=[code]  # type: ignore
-                )
-            )
-
-        return me.lang.ExceptionContext(
-            title=self.title, body=body  # type: ignore
-        )
+    return SQLSource(
+        text=generator.finish(),
+        source_map=generator.source_map,
+        param_index=generator.param_index,
+    )
 
 
-class SQLSourceGeneratorError(errors.InternalServerError):
-    def __init__(
-        self,
-        msg: str,
-        *,
-        node: Optional[pgast.Base] = None,
-        details: Optional[str] = None,
-        hint: Optional[str] = None,
-    ) -> None:
-        super().__init__(msg, details=details, hint=hint)
-        if node is not None:
-            ctx = SQLSourceGeneratorContext(node)
-            exceptions.add_context(self, ctx)
+def generate_source(
+    node: pgast.Base,
+    *,
+    indent_with: str = ' ' * 4,
+    add_line_information: bool = False,
+    pretty: bool = False,
+    reordered: bool = False,
+) -> str:
+    # Simplified entrypoint
+
+    source = generate(
+        node,
+        indent_with=indent_with,
+        add_line_information=add_line_information,
+        pretty=pretty,
+        reordered=reordered,
+    )
+    return source.text
+
+
+def generate_ctes_source(
+    ctes: List[pgast.CommonTableExpr],
+) -> str:
+    # Alternative simplified entrypoint generating 'WITH a AS (...)' only.
+
+    generator = SQLSourceGenerator(opts=codegen.Options())
+    generator.gen_ctes(ctes)
+
+    return generator.finish()
+
+
+class SourceMap:
+    @abc.abstractmethod
+    def translate(self, pos: int) -> int:
+        ...
+
+
+@dataclasses.dataclass(kw_only=True)
+class BaseSourceMap(SourceMap):
+    source_start: int
+    output_start: int
+    output_end: int | None = None
+    children: List[BaseSourceMap] = (
+        dataclasses.field(default_factory=list))
+
+    def translate(self, pos: int) -> int:
+        bu = None
+        for u in self.children:
+            if u.output_start >= pos:
+                break
+            bu = u
+        if bu and (bu.output_end is None or bu.output_end > pos):
+            return bu.translate(pos)
+        return self.source_start
+
+
+@dataclasses.dataclass
+class ChainedSourceMap(SourceMap):
+    parts: List[SourceMap] = (
+        dataclasses.field(default_factory=list))
+
+    def translate(self, pos: int) -> int:
+        for part in self.parts:
+            pos = part.translate(pos)
+        return pos
+
+
+@dataclasses.dataclass(frozen=True)
+class SQLSource:
+    text: str
+    param_index: dict[int, list[int]]
+    source_map: Optional[SourceMap] = None
 
 
 class SQLSourceGenerator(codegen.SourceGenerator):
-    def __init__(self, *args, reordered=False, **kwargs):  # type: ignore
-        super().__init__(*args, **kwargs)
-        self.param_index: dict[object, int] = {}
+    def __init__(
+        self,
+        opts: codegen.Options,
+        *,
+        with_source_map: bool = False,
+        reordered: bool = False,
+    ):
+        super().__init__(
+            indent_with=opts.indent_with,
+            add_line_information=opts.add_line_information,
+            pretty=opts.pretty,
+        )
+        self.is_toplevel = True
+        # params
+        self.with_source_map: bool = with_source_map
         self.reordered = reordered
 
-    @classmethod
-    def to_source(  # type: ignore
-        cls,
-        node: pgast.Base,
-        indent_with: str = ' ' * 4,
-        add_line_information: bool = False,
-        pretty: bool = True,
-        reordered: bool = False,
-    ) -> str:
-        try:
-            return super().to_source(
-                node,
-                indent_with=indent_with,
-                reordered=reordered,
-                add_line_information=add_line_information,
-                pretty=pretty,
-            )
-        except SQLSourceGeneratorError as e:
-            ctx = SQLSourceGeneratorContext(node)
-            exceptions.add_context(e, ctx)
-            raise
+        # state
+        self.param_index: collections.defaultdict[int, list[int]] = (
+            collections.defaultdict(list))
+        self.write_index: int = 0
+        self.source_map: Optional[BaseSourceMap] = None
 
-    @classmethod
-    def ctes_to_source(cls, ctes: List[pgast.CommonTableExpr]) -> str:
-        generator = cls()
-        generator.gen_ctes(ctes)
-        return ''.join(generator.result)
+    def write(
+        self,
+        *x: str,
+        delimiter: Optional[str] = None,
+    ) -> None:
+        self.is_toplevel = False
+        start = len(self.result)
+        super().write(*x, delimiter=delimiter)
+        for new in range(start, len(self.result)):
+            self.write_index += len(self.result[new])
+
+    def visit(self, node):  # type: ignore
+        if self.with_source_map:
+            source_map = BaseSourceMap(
+                source_start=node.span.start if node.span else 0,
+                output_start=self.write_index,
+            )
+            old_top = self.source_map
+            self.source_map = source_map
+        super().visit(node)
+        if self.with_source_map:
+            assert self.source_map == source_map
+            self.source_map.output_end = self.write_index
+            if old_top:
+                old_top.children.append(self.source_map)
+                self.source_map = old_top
 
     def generic_visit(self, node):  # type: ignore
-        raise SQLSourceGeneratorError(
+        raise GeneratorError(
             'No method to generate code for %s' % node.__class__.__name__
         )
 
@@ -126,14 +216,14 @@ class SQLSourceGenerator(codegen.SourceGenerator):
         count = len(ctes)
         for i, cte in enumerate(ctes):
             self.new_lines = 1
-            if getattr(cte, 'recursive', None):
+            if i == 0 and getattr(cte, 'recursive', None):
                 self.write('RECURSIVE ')
             self.write(common.quote_ident(cte.name))
 
             if cte.aliascolnames:
                 self.write('(')
                 for (index, col_name) in enumerate(cte.aliascolnames):
-                    self.write(common.qname(col_name))
+                    self.write(common.qname(col_name, column=True))
                     if index + 1 < len(cte.aliascolnames):
                         self.write(',')
                 self.write(')')
@@ -165,18 +255,6 @@ class SQLSourceGenerator(codegen.SourceGenerator):
         else:
             self.write(common.qname(node.schemaname, node.name))
 
-    def _visit_values_expr(self, node: pgast.SelectStmt) -> None:
-        assert node.values
-        self.new_lines = 1
-        self.write('(')
-        self.write('VALUES')
-        self.new_lines = 1
-        self.indentation += 1
-        self.visit_list(node.values)
-        self.indentation -= 1
-        self.new_lines = 1
-        self.write(')')
-
     def visit_NullRelation(self, node: pgast.NullRelation) -> None:
         self.write('(SELECT ')
         if node.target_list:
@@ -192,16 +270,10 @@ class SQLSourceGenerator(codegen.SourceGenerator):
         self.write(')')
 
     def visit_SelectStmt(self, node: pgast.SelectStmt) -> None:
-        if node.values:
-            self._visit_values_expr(node)
-            return
-
-        # This is a very crude detection of whether this SELECT is
-        # a top level statement.
-        parenthesize = bool(self.result)
+        parenthesize = not self.is_toplevel
 
         if parenthesize:
-            if not self.reordered:
+            if not self.reordered and self.result:
                 self.new_lines = 1
             self.write('(')
             if self.reordered:
@@ -212,6 +284,17 @@ class SQLSourceGenerator(codegen.SourceGenerator):
         if node.ctes:
             self.write('WITH ')
             self.gen_ctes(node.ctes)
+
+        if node.values:
+            self.write('VALUES')
+            self.new_lines = 1
+            self.visit_list(node.values)
+            if parenthesize:
+                self.new_lines = 1
+                if self.reordered and not node.op:
+                    self.indentation -= 1
+                self.write(')')
+            return
 
         # If reordered is True, we try to put the FROM clause *before* SELECT,
         # like it *ought* to be. We do various hokey things to try to make
@@ -233,6 +316,13 @@ class SQLSourceGenerator(codegen.SourceGenerator):
 
         if node.op:
             # Upper level set operation node (UNION/INTERSECT)
+
+            # HACK: The LHS of a set operation is *not* top-level, and
+            # shouldn't be treated as such. Since we (also hackily)
+            # use whether anything has been written do determine
+            # whether we are at the top level, write out an empty
+            # string to force parenthesization.
+            self.is_toplevel = False
             self.visit(node.larg)
             self.write(' ' + node.op + ' ')
             if node.all:
@@ -295,13 +385,13 @@ class SQLSourceGenerator(codegen.SourceGenerator):
             self.visit_list(node.group_clause)
             self.indentation -= 2
 
-        if node.having:
+        if node.having_clause:
             self.indentation += 1
             self.new_lines = 1
             self.write('HAVING')
             self.new_lines = 1
             self.indentation += 1
-            self.visit(node.having)
+            self.visit(node.having_clause)
             self.indentation -= 2
 
         if node.sort_clause:
@@ -325,6 +415,12 @@ class SQLSourceGenerator(codegen.SourceGenerator):
             self.new_lines = 1
             self.write('LIMIT ')
             self.visit(node.limit_count)
+            self.indentation -= 1
+
+        if node.locking_clause:
+            self.indentation += 1
+            self.new_lines = 1
+            self.visit_list(node.locking_clause, separator=" ")
             self.indentation -= 1
 
         if self.reordered and not node.op:
@@ -368,6 +464,8 @@ class SQLSourceGenerator(codegen.SourceGenerator):
                 self.write('(')
                 self.visit(node.select_stmt)
                 self.write(')')
+        else:
+            self.write('DEFAULT VALUES')
 
         if node.on_conflict:
             self.new_lines = 1
@@ -487,7 +585,10 @@ class SQLSourceGenerator(codegen.SourceGenerator):
 
     def visit_MultiAssignRef(self, node: pgast.MultiAssignRef) -> None:
         self.write('(')
-        self.visit_list(node.columns, newlines=False)
+        for index, col in enumerate(node.columns):
+            if index > 0:
+                self.write(', ')
+            self.write(common.quote_col(col))
         self.write(') = ')
         self.visit(node.source)
 
@@ -496,21 +597,19 @@ class SQLSourceGenerator(codegen.SourceGenerator):
 
     def visit_ResTarget(self, node: pgast.ResTarget) -> None:
         self.visit(node.val)
-        if node.indirection:
-            self._visit_indirection_ops(node.indirection)
         if node.name:
-            self.write(' AS ' + common.quote_ident(node.name))
+            self.write(' AS ' + common.quote_col(node.name))
 
     def visit_InsertTarget(self, node: pgast.InsertTarget) -> None:
-        self.write(common.quote_ident(node.name))
+        self.write(common.quote_col(node.name))
 
     def visit_UpdateTarget(self, node: pgast.UpdateTarget) -> None:
         if isinstance(node.name, list):
             self.write('(')
-            self.write(', '.join(common.quote_ident(n) for n in node.name))
+            self.write(', '.join(common.quote_col(n) for n in node.name))
             self.write(')')
         else:
-            self.write(common.quote_ident(node.name))
+            self.write(common.quote_col(node.name))
         if node.indirection:
             self._visit_indirection_ops(node.indirection)
         self.write(' = ')
@@ -520,7 +619,7 @@ class SQLSourceGenerator(codegen.SourceGenerator):
         self.write(common.quote_ident(node.aliasname))
         if node.colnames:
             self.write('(')
-            self.write(', '.join(common.quote_ident(n) for n in node.colnames))
+            self.write(', '.join(common.quote_col(n) for n in node.colnames))
             self.write(')')
 
     def visit_Keyword(self, node: pgast.Keyword) -> None:
@@ -537,7 +636,7 @@ class SQLSourceGenerator(codegen.SourceGenerator):
         elif isinstance(rel, pgast.CommonTableExpr):
             self.write(common.quote_ident(rel.name))
         else:
-            raise SQLSourceGeneratorError(
+            raise GeneratorError(
                 'unexpected relation in RelRangeVar: {!r}'.format(rel)
             )
 
@@ -589,12 +688,15 @@ class SQLSourceGenerator(codegen.SourceGenerator):
                 self.write(names[0])
                 if len(names) > 1:
                     self.write('.')
-                    self.write(common.qname(*names[1:]))
+                    self.write(common.qname(*names[1:], column=True))
             else:
-                self.write(common.qname(*names))
+                self.write(common.qname(*names, column=True))
+
+    def visit_ExprOutputVar(self, node: pgast.ExprOutputVar) -> None:
+        self.visit(node.expr)
 
     def visit_ColumnDef(self, node: pgast.ColumnDef) -> None:
-        self.write(common.quote_ident(node.name))
+        self.write(common.quote_col(node.name))
         if node.typename:
             self.write(' ')
             self.visit(node.typename)
@@ -615,42 +717,42 @@ class SQLSourceGenerator(codegen.SourceGenerator):
 
     def visit_JoinExpr(self, node: pgast.JoinExpr) -> None:
         self.visit(node.larg)
-        if node.rarg is not None:
+        for join in node.joins:
             self.new_lines = 1
-            if not node.quals and not node.using_clause:
+            if not join.quals and not join.using_clause:
                 join_type = 'CROSS'
             else:
-                join_type = node.type.upper()
+                join_type = join.type.upper()
             if join_type == 'INNER':
                 self.write('JOIN ')
             else:
                 self.write(join_type + ' JOIN ')
             nested_join = (
-                isinstance(node.rarg, pgast.JoinExpr)
-                and node.rarg.rarg is not None
+                isinstance(join.rarg, pgast.JoinExpr)
+                and join.rarg.joins
             )
             if nested_join:
                 self.write('(')
                 self.new_lines = 1
                 self.indentation += 1
-            self.visit(node.rarg)
+            self.visit(join.rarg)
             if nested_join:
                 self.indentation -= 1
                 self.new_lines = 1
                 self.write(')')
-            if node.quals is not None:
+            if join.quals is not None:
                 if not nested_join:
                     self.indentation += 1
                     self.new_lines = 1
                     self.write('ON ')
                 else:
                     self.write(' ON ')
-                self.visit(node.quals)
+                self.visit(join.quals)
                 if not nested_join:
                     self.indentation -= 1
-            elif node.using_clause:
+            elif join.using_clause:
                 self.write(" USING (")
-                self.visit_list(node.using_clause)
+                self.visit_list(join.using_clause)
                 self.write(")")
 
     def visit_Expr(self, node: pgast.Expr) -> None:
@@ -679,11 +781,15 @@ class SQLSourceGenerator(codegen.SourceGenerator):
     def visit_StringConstant(self, node: pgast.StringConstant) -> None:
         self.write(common.quote_literal(node.val))
 
+    def visit_BitStringConstant(self, node: pgast.BitStringConstant) -> None:
+        self.write(f"{node.kind}'{node.val}'")
+
     def visit_ByteaConstant(self, node: pgast.ByteaConstant) -> None:
         self.write(common.quote_bytea_literal(node.val))
 
     def visit_ParamRef(self, node: pgast.ParamRef) -> None:
-        self.write('$', str(node.number))
+        self.write(f'${node.number}')
+        self.param_index[node.number].append(len(self.result) - 1)
 
     def visit_RowExpr(self, node: pgast.RowExpr) -> None:
         self.write('ROW(')
@@ -780,9 +886,18 @@ class SQLSourceGenerator(codegen.SourceGenerator):
             elif node.nulls == pgast.NullsLast:
                 self.write(' NULLS LAST')
             else:
-                raise SQLSourceGeneratorError(
+                raise GeneratorError(
                     'unexpected NULLS order: {}'.format(node.nulls)
                 )
+
+    def visit_LockingClause(self, node: pgast.LockingClause) -> None:
+        self.write("FOR ", str(node.strength))
+        if node.locked_rels:
+            self.write(" OF ")
+            self.visit_list(node.locked_rels)
+        if node.wait_policy is not None:
+            if kw := str(node.wait_policy):
+                self.write(f" {kw}")
 
     def visit_TypeCast(self, node: pgast.TypeCast) -> None:
         # '::' has very high precedence, so parenthesize the expression.
@@ -856,13 +971,13 @@ class SQLSourceGenerator(codegen.SourceGenerator):
         self, node: pgast.RecordIndirectionOp
     ) -> None:
         self.write('.')
-        self.write(node.name)
+        self.write(common.qname(node.name))
 
     def _visit_indirection_ops(
         self, ops: Sequence[pgast.IndirectionOp]
     ) -> None:
         for op in ops:
-            if isinstance(op, (pgast.Star, pgast.ColumnRef)):
+            if isinstance(op, pgast.Star):
                 self.write('.')
             self.visit(op)
 
@@ -914,7 +1029,7 @@ class SQLSourceGenerator(codegen.SourceGenerator):
         self.write("SET ")
         if node.scope == pgast.OptionsScope.TRANSACTION:
             self.write("LOCAL ")
-        self.write(node.name)
+        self.write(common.qname(node.name))
         self.write(" TO ")
         self.visit(node.args)
 
@@ -929,7 +1044,7 @@ class SQLSourceGenerator(codegen.SourceGenerator):
             self.write("SET ")
             if node.scope == pgast.OptionsScope.TRANSACTION:
                 self.write("LOCAL ")
-            self.write(node.name)
+            self.write(common.qname(node.name))
             self.write(" TO DEFAULT")
 
     def visit_SetTransactionStmt(self, node: pgast.SetTransactionStmt) -> None:
@@ -942,7 +1057,7 @@ class SQLSourceGenerator(codegen.SourceGenerator):
 
     def visit_VariableShowStmt(self, node: pgast.VariableShowStmt) -> None:
         self.write("SHOW ")
-        self.write(node.name)
+        self.write(common.qname(node.name))
 
     def visit_BeginStmt(self, node: pgast.BeginStmt) -> None:
         self.write("BEGIN")
@@ -1003,7 +1118,7 @@ class SQLSourceGenerator(codegen.SourceGenerator):
                     self.write(" DEFERRABLE")
 
     def visit_PrepareStmt(self, node: pgast.PrepareStmt) -> None:
-        self.write(f"PREPARE {node.name}")
+        self.write(f"PREPARE {common.quote_ident(node.name)}")
         if node.argtypes:
             self.write(f"(")
             self.visit_list(node.argtypes, newlines=False)
@@ -1012,34 +1127,17 @@ class SQLSourceGenerator(codegen.SourceGenerator):
         self.visit(node.query)
 
     def visit_ExecuteStmt(self, node: pgast.ExecuteStmt) -> None:
-        self.write(f"EXECUTE {node.name}")
+        self.write(f"EXECUTE {common.quote_ident(node.name)}")
         if node.params:
             self.write(f"(")
             self.visit_list(node.params, newlines=False)
             self.write(f")")
 
+    def visit_DeallocateStmt(self, node: pgast.DeallocateStmt) -> None:
+        self.write(f"DEALLOCATE {common.quote_ident(node.name)}")
+
     def visit_SQLValueFunction(self, node: pgast.SQLValueFunction) -> None:
-        from edb.pgsql.ast import SQLValueFunctionOP as op
-
-        names = {
-            op.CURRENT_DATE: "current_date",
-            op.CURRENT_TIME: "current_time",
-            op.CURRENT_TIME_N: "current_time",
-            op.CURRENT_TIMESTAMP: "current_timestamp",
-            op.CURRENT_TIMESTAMP_N: "current_timestamp",
-            op.LOCALTIME: "localtime",
-            op.LOCALTIME_N: "localtime",
-            op.LOCALTIMESTAMP: "localtimestamp",
-            op.LOCALTIMESTAMP_N: "localtimestamp",
-            op.CURRENT_ROLE: "current_role",
-            op.CURRENT_USER: "current_user",
-            op.USER: "user",
-            op.SESSION_USER: "session_user",
-            op.CURRENT_CATALOG: "current_catalog",
-            op.CURRENT_SCHEMA: "current_schema",
-        }
-
-        self.write(names[node.op])
+        self.write(common.get_sql_value_function_op(node.op))
         if node.arg:
             self.write("(")
             self.visit(node.arg)
@@ -1084,5 +1182,137 @@ class SQLSourceGenerator(codegen.SourceGenerator):
         if node.no_wait:
             self.write(' NOWAIT')
 
+    def visit_CopyStmt(self, node: pgast.CopyStmt) -> None:
+        self.write('COPY ')
+        if node.query:
+            self.write('(')
+            self.indentation += 1
+            self.new_lines = 1
+            self.visit(node.query)
+            self.indentation -= 1
+            self.write(')')
+        elif node.relation:
+            self.visit_Relation(node.relation)
+            if node.colnames:
+                self.write(' (')
+                self.write(
+                    ', '.join(common.quote_ident(n) for n in node.colnames))
+                self.write(')')
 
-generate_source = SQLSourceGenerator.to_source
+        if node.is_from:
+            self.write(' FROM ')
+        else:
+            self.write(' TO ')
+
+        if node.is_program:
+            self.write('PROGRAM ')
+        if node.filename:
+            self.write(common.quote_literal(node.filename))
+        else:
+            if node.is_from:
+                self.write('STDIN')
+            else:
+                self.write('STDOUT')
+
+        self.visit_CopyOptions(node.options)
+
+        if node.where_clause:
+            self.indentation += 1
+            self.new_lines = 1
+            self.write('WHERE')
+            self.new_lines = 1
+            self.indentation += 1
+            self.visit(node.where_clause)
+            self.indentation -= 2
+
+    def visit_CopyOptions(self, node: pgast.CopyOptions) -> None:
+        ql = common.quote_literal
+        qi = common.quote_ident
+
+        opts = []
+
+        if node.format:
+            opts.append('FORMAT ' + node.format._name_)
+        if node.freeze is not None:
+            opts.append('FREEZE' + ('' if node.freeze else ' FALSE'))
+        if node.delimiter:
+            opts.append('DELIMITER ' + ql(node.delimiter))
+        if node.null:
+            opts.append('NULL ' + ql(node.null))
+        if node.header is not None:
+            opts.append('HEADER' + ('' if node.header else ' FALSE'))
+        if node.quote:
+            opts.append('QUOTE ' + ql(node.quote))
+        if node.escape:
+            opts.append('ESCAPE ' + ql(node.escape))
+        if node.force_quote:
+            opts.append(
+                'FORCE_QUOTE (' + ', '.join(map(qi, node.force_quote)) + ')'
+            )
+        if node.force_not_null:
+            opts.append(
+                'FORCE_NOT_NULL ('
+                + ', '.join(map(qi, node.force_not_null))
+                + ')'
+            )
+        if node.force_null:
+            opts.append(
+                'FORCE_NULL (' + ', '.join(map(qi, node.force_null)) + ')'
+            )
+        if node.encoding:
+            opts.append('ENCODING ' + ql(node.encoding))
+
+        if opts:
+            self.write(' (' + ', '.join(opts), ')')
+
+
+class GeneratorContext(markup.MarkupExceptionContext):
+    title = 'SQL Source Generator Context'
+
+    def __init__(
+        self,
+        node: pgast.Base,
+        chunks_generated: Optional[Sequence[str]] = None,
+    ):
+        self.node = node
+        self.chunks_generated = chunks_generated
+
+    @classmethod
+    def as_markup(cls: Any, self: Any, *, ctx: Any):  # type: ignore
+        me = markup.elements
+
+        body = [
+            me.doc.Section(
+                title='SQL Tree',
+                body=[markup.serialize(self.node, ctx=ctx)],  # type: ignore
+            )
+        ]
+
+        if self.chunks_generated:
+            code = markup.serializer.serialize_code(
+                ''.join(self.chunks_generated), lexer='sql'
+            )
+            body.append(
+                me.doc.Section(
+                    title='SQL generated so far', body=[code]  # type: ignore
+                )
+            )
+
+        return me.lang.ExceptionContext(
+            title=self.title, body=body  # type: ignore
+        )
+
+
+class GeneratorError(errors.InternalServerError):
+    def __init__(
+        self,
+        msg: str,
+        *,
+        node: Optional[pgast.Base] = None,
+        details: Optional[str] = None,
+        hint: Optional[str] = None,
+    ) -> None:
+        super().__init__(msg, details=details, hint=hint)
+        if node is not None:
+            ctx = GeneratorContext(node)
+            exceptions.add_context(self, ctx)

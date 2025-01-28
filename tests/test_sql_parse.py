@@ -22,7 +22,7 @@ from edb.testbase import lang as tb
 from edb.tools import test
 
 
-class TestEdgeQLSelect(tb.BaseDocTest):
+class TestSQLParse(tb.BaseDocTest):
 
     def run_test(self, *, source, spec, expected):
         def inline(text):
@@ -41,7 +41,7 @@ class TestEdgeQLSelect(tb.BaseDocTest):
         else:
             expected = source
 
-        ast = parser.parse(source)
+        ast = parser.parse(source, propagate_spans=True)
         sql_stmts = [
             codegen.generate_source(stmt, pretty=False) for stmt in ast
         ]
@@ -115,7 +115,7 @@ class TestEdgeQLSelect(tb.BaseDocTest):
         """
         SELECT * FROM table_one UNION select * FROM table_two
 % OK %
-        SELECT * FROM table_one UNION (SELECT * FROM table_two)
+        (SELECT * FROM table_one) UNION (SELECT * FROM table_two)
         """
 
     def test_sql_parse_select_08(self):
@@ -252,7 +252,7 @@ class TestEdgeQLSelect(tb.BaseDocTest):
         """
         select * FROM table_one UNION select * FROM table_two
 % OK %
-        SELECT * FROM table_one UNION (SELECT * FROM table_two)
+        (SELECT * FROM table_one) UNION (SELECT * FROM table_two)
         """
 
     def test_sql_parse_select_28(self):
@@ -449,6 +449,28 @@ class TestEdgeQLSelect(tb.BaseDocTest):
         SELECT * FROM t_20210301_x
         """
 
+    def test_sql_parse_select_58(self):
+        """
+        SELECT (1.2 * 3.4)
+        """
+
+    def test_sql_parse_select_59(self):
+        """
+        SELECT TRUE; SELECT FALSE
+        """
+
+    def test_sql_parse_select_60(self):
+        """
+        SELECT -1; SELECT 0; SELECT 1
+        """
+
+    def test_sql_parse_select_61(self):
+        """
+        SELECT a[1:3], b.x
+% OK %
+        SELECT (a)[1:3], b.x
+        """
+
     def test_sql_parse_insert_00(self):
         """
         INSERT INTO my_table (id, name) VALUES (1, 'some')
@@ -524,6 +546,22 @@ class TestEdgeQLSelect(tb.BaseDocTest):
     def test_sql_parse_insert_10(self):
         """
         INSERT INTO films (code, title, did) VALUES ($1, $2, $3)
+        """
+
+    def test_sql_parse_insert_11(self):
+        """
+        INSERT INTO films DEFAULT VALUES
+        ON CONFLICT DO UPDATE
+        SET (a, b) = ('a', 'b'), c = 'c', (d, e) = ('d', 'e')
+        """
+
+    def test_sql_parse_insert_12(self):
+        """
+        INSERT INTO foo DEFAULT VALUES
+        RETURNING a[1:3] AS a, b.x AS b
+% OK %
+        INSERT INTO foo DEFAULT VALUES
+        RETURNING (a)[1:3] AS a, b.x AS b
         """
 
     def test_sql_parse_update_00(self):
@@ -613,6 +651,23 @@ class TestEdgeQLSelect(tb.BaseDocTest):
         UPDATE x SET z = now()
         """
 
+    def test_sql_parse_update_11(self):
+        """
+        UPDATE x SET (a, b) = ('a', 'b'), c = 'c', (d, e) = ('d', 'e')
+        """
+
+    @test.xerror('unsupported')
+    def test_sql_parse_update_12(self):
+        """
+        UPDATE tictactoe SET
+        (board[1:3][1:3], finished) = ('{{,,},{,,},{,,}}', FALSE)
+        """
+
+    def test_sql_parse_update_13(self):
+        """
+        UPDATE tictactoe SET a = a RETURNING *
+        """
+
     def test_sql_parse_delete(self):
         """
         DELETE FROM dataset USING table_one
@@ -620,52 +675,6 @@ class TestEdgeQLSelect(tb.BaseDocTest):
 % OK %
         DELETE FROM dataset USING table_one
         WHERE ((x = y) OR x = ANY ((SELECT * FROM table_two)))
-        """
-
-    def test_sql_parse_query_00(self):
-        """
-        SELECT * FROM
-        (VALUES (1, 'one'), (2, 'two')) AS t(num, letter)
-        """
-
-    @test.xerror("unsupported")
-    def test_sql_parse_query_01(self):
-        """
-        SELECT * FROM my_table ORDER BY field ASC NULLS LAST USING @>
-        """
-
-    @test.xfail("unsupported")
-    def test_sql_parse_query_02(self):
-        """
-        SELECT m.* FROM mytable AS m FOR UPDATE
-        """
-
-    @test.xfail("unsupported")
-    def test_sql_parse_query_03(self):
-        """
-        SELECT m.* FROM mytable m FOR SHARE of m nowait
-        """
-
-    def test_sql_parse_query_04(self):
-        """
-        SELECT * FROM unnest(ARRAY['a', 'b', 'c', 'd', 'e', 'f'])
-        """
-
-    @test.xerror("unsupported")
-    def test_sql_parse_query_06(self):
-        """
-        SELECT ?
-        """
-
-    @test.xerror("unsupported")
-    def test_sql_parse_query_07(self):
-        """
-        SELECT * FROM x WHERE y = ?
-        """
-
-    def test_sql_parse_query_08(self):
-        """
-        SELECT * FROM x WHERE y = ANY ($1)
         """
 
     def test_sql_parse_transaction_00(self):
@@ -827,6 +836,51 @@ class TestEdgeQLSelect(tb.BaseDocTest):
         SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE
         """
 
+    def test_sql_parse_query_00(self):
+        """
+        SELECT * FROM
+        (VALUES (1, 'one'), (2, 'two')) AS t(num, letter)
+        """
+
+    @test.xerror("unsupported")
+    def test_sql_parse_query_01(self):
+        """
+        SELECT * FROM my_table ORDER BY field ASC NULLS LAST USING @>
+        """
+
+    def test_sql_parse_query_02(self):
+        """
+        SELECT m.* FROM mytable AS m FOR UPDATE
+        """
+
+    @test.xfail("unsupported")
+    def test_sql_parse_query_03(self):
+        """
+        SELECT m.* FROM mytable m FOR SHARE of m nowait
+        """
+
+    def test_sql_parse_query_04(self):
+        """
+        SELECT * FROM unnest(ARRAY['a', 'b', 'c', 'd', 'e', 'f'])
+        """
+
+    @test.xerror("unsupported")
+    def test_sql_parse_query_06(self):
+        """
+        SELECT ?
+        """
+
+    @test.xerror("unsupported")
+    def test_sql_parse_query_07(self):
+        """
+        SELECT * FROM x WHERE y = ?
+        """
+
+    def test_sql_parse_query_08(self):
+        """
+        SELECT * FROM x WHERE y = ANY ($1)
+        """
+
     def test_sql_parse_query_09(self):
         """
         PREPARE fooplan (int, text, bool, numeric) AS (SELECT $1, $2, $3, $4)
@@ -841,7 +895,6 @@ class TestEdgeQLSelect(tb.BaseDocTest):
         EXECUTE fooplan(1, 'Hunter Valley', 't', 200.00)
         """
 
-    @test.xerror("unsupported")
     def test_sql_parse_query_11(self):
         """
         DEALLOCATE a123
@@ -863,6 +916,11 @@ class TestEdgeQLSelect(tb.BaseDocTest):
     def test_sql_parse_query_14(self):
         """
         VACUUM FULL my_table
+        """
+
+    def test_sql_parse_query_15(self):
+        """
+        SELECT (pg_column_size(ROW()))::text
         """
 
     @test.xerror("unsupported")
@@ -1182,4 +1240,88 @@ class TestEdgeQLSelect(tb.BaseDocTest):
         SET transaction_read_only TO DEFAULT
 % OK %
         SET LOCAL transaction_read_only TO DEFAULT
+        """
+
+    def test_sql_parse_copy_01(self):
+        """
+        COPY "Movie" TO STDOUT (
+            FORMAT CSV,
+            FREEZE,
+            DELIMITER '|',
+            NULL 'this is a null',
+            HEADER FALSE,
+            QUOTE '''',
+            ESCAPE 'e',
+            FORCE_QUOTE (title, year_release),
+            FORCE_NOT_NULL (title),
+            FORCE_NULL (year_release),
+            ENCODING 'UTF-8'
+        )
+        """
+
+    def test_sql_parse_copy_02(self):
+        """
+        COPY ((SELECT * FROM "Movie")) TO STDOUT
+        """
+
+    def test_sql_parse_copy_03(self):
+        """
+        COPY "Movie" (title, release_year) FROM STDIN WHERE (id > 100)
+        """
+
+    def test_sql_parse_copy_04(self):
+        """
+        COPY country TO STDOUT (DELIMITER '|')
+        """
+
+    def test_sql_parse_copy_05(self):
+        """
+        COPY country FROM '/usr1/proj/bray/sql/country_data'
+        """
+
+    def test_sql_parse_copy_06(self):
+        """
+        COPY country TO PROGRAM 'gzip > /usr1/proj/bray/sql/country_data.gz'
+        """
+
+    def test_sql_parse_table(self):
+        """
+        TABLE hello_world
+% OK %
+        SELECT * FROM hello_world
+        """
+
+    def test_sql_parse_select_locking_00(self):
+        """
+        SELECT id FROM a FOR UPDATE
+        """
+
+    def test_sql_parse_select_locking_01(self):
+        """
+        SELECT id FROM a FOR NO KEY UPDATE
+        """
+
+    def test_sql_parse_select_locking_02(self):
+        """
+        SELECT id FROM a FOR SHARE
+        """
+
+    def test_sql_parse_select_locking_03(self):
+        """
+        SELECT id FROM a FOR KEY SHARE
+        """
+
+    def test_sql_parse_select_locking_04(self):
+        """
+        SELECT id FROM a FOR UPDATE NOWAIT
+        """
+
+    def test_sql_parse_select_locking_05(self):
+        """
+        SELECT id FROM a FOR UPDATE SKIP LOCKED
+        """
+
+    def test_sql_parse_select_locking_06(self):
+        """
+        SELECT id FROM a FOR UPDATE OF b
         """

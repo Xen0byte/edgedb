@@ -18,7 +18,7 @@
 
 
 from __future__ import annotations
-from typing import *
+from typing import Any, Optional, Type, AbstractSet, TYPE_CHECKING
 
 from edb import errors
 
@@ -41,8 +41,8 @@ if TYPE_CHECKING:
 
 
 class Trigger(
-    referencing.ReferencedInheritingObject,
-    s_anno.AnnotationSubject,
+    referencing.NamedReferencedInheritingObject,
+    so.InheritingObject,  # Help reflection figure out the right db MRO
     qlkind=qltypes.SchemaObjectClass.TRIGGER,
     data_safe=True,
 ):
@@ -71,7 +71,14 @@ class Trigger(
 
     expr = so.SchemaField(
         s_expr.Expression,
+        compcoef=0.909,
+        special_ddl_syntax=True,
+    )
+
+    condition = so.SchemaField(
+        s_expr.Expression,
         default=None,
+        coerce=True,
         compcoef=0.909,
         special_ddl_syntax=True,
     )
@@ -80,6 +87,17 @@ class Trigger(
         so.InheritingObject,
         compcoef=None,
         inheritable=False)
+
+    # We don't support SET/DROP OWNED owned on triggers so we set its
+    # compcoef to 0.0
+    owned = so.SchemaField(
+        bool,
+        default=False,
+        inheritable=False,
+        compcoef=0.0,
+        reflection_method=so.ReflectionMethod.AS_LINK,
+        special_ddl_syntax=True,
+    )
 
     def get_subject(self, schema: s_schema.Schema) -> s_objtypes.ObjectType:
         subj: s_objtypes.ObjectType = self.get_field_value(schema, 'subject')
@@ -110,16 +128,42 @@ class TriggerCommand(
         context: sd.CommandContext,
     ) -> s_schema.Schema:
         schema = super().canonicalize_attributes(schema, context)
+        parent_ctx = self.get_referrer_context_or_die(context)
+        source = parent_ctx.op.scls
+        trig_name = self.get_verbosename(parent=source.get_verbosename(schema))
 
-        for field in ('expr',):
+        for field in ('expr', 'condition'):
             if (expr := self.get_local_attribute_value(field)) is None:
                 continue
 
-            self.compile_expr_field(
+            vname = 'when' if field == 'condition' else 'using'
+
+            expression = self.compile_expr_field(
                 schema, context,
                 field=Trigger.get_field(field),
                 value=expr,
             )
+
+            if field == 'condition':
+                target = schema.get(
+                    sn.QualName('std', 'bool'), type=s_types.Type)
+                expr_type = expression.irast.stype
+                if not expr_type.issubclass(expression.irast.schema, target):
+                    span = self.get_attribute_span(field)
+                    raise errors.SchemaDefinitionError(
+                        f'{vname} expression for {trig_name} is of invalid '
+                        f'type: '
+                        f'{expr_type.get_displayname(schema)}, '
+                        f'expected {target.get_displayname(schema)}',
+                        span=span,
+                    )
+
+                if expression.irast.dml_exprs:
+                    raise errors.SchemaDefinitionError(
+                        'data-modifying statements are not allowed in trigger '
+                        'when clauses',
+                        span=expression.irast.dml_exprs[0].span,
+                    )
 
         return schema
 
@@ -143,7 +187,7 @@ class TriggerCommand(
         value: s_expr.Expression,
         track_schema_ref_exprs: bool=False,
     ) -> s_expr.CompiledExpression:
-        if field.name == 'expr':
+        if field.name in {'expr', 'condition'}:
             from edb.ir import pathid
 
             parent_ctx = self.get_referrer_context_or_die(context)
@@ -160,16 +204,20 @@ class TriggerCommand(
             scope = self._get_scope(schema)
             kinds = self._get_kinds(schema)
 
-            anchors = {}
+            anchors: dict[str, pathid.PathId] = {}
             if qltypes.TriggerKind.Insert not in kinds:
                 anchors['__old__'] = pathid.PathId.from_type(
-                    schema, source, typename=sn.QualName(
-                        module='__derived__', name='__old__')
+                    schema,
+                    source,
+                    typename=sn.QualName(module='__derived__', name='__old__'),
+                    env=None,
                 )
             if qltypes.TriggerKind.Delete not in kinds:
                 anchors['__new__'] = pathid.PathId.from_type(
-                    schema, source, typename=sn.QualName(
-                        module='__derived__', name='__new__')
+                    schema,
+                    source,
+                    typename=sn.QualName(module='__derived__', name='__new__'),
+                    env=None,
                 )
 
             singletons = (
@@ -179,20 +227,30 @@ class TriggerCommand(
 
             assert isinstance(source, s_types.Type)
 
-            return type(value).compiled(
-                value,
-                schema=schema,
-                options=qlcompiler.CompilerOptions(
-                    modaliases=context.modaliases,
-                    schema_object_context=self.get_schema_metaclass(),
-                    anchors=anchors,
-                    singletons=singletons,
-                    apply_query_rewrites=not context.stdmode,
-                    track_schema_ref_exprs=track_schema_ref_exprs,
-                    # in_ddl_context_name=in_ddl_context_name,
-                    detached=True,
-                ),
-            )
+            try:
+                return type(value).compiled(
+                    value,
+                    schema=schema,
+                    options=qlcompiler.CompilerOptions(
+                        modaliases=context.modaliases,
+                        schema_object_context=self.get_schema_metaclass(),
+                        anchors=anchors,
+                        singletons=singletons,
+                        apply_query_rewrites=not context.stdmode,
+                        track_schema_ref_exprs=track_schema_ref_exprs,
+                        # in_ddl_context_name=in_ddl_context_name,
+                        detached=True,
+                        trigger_type=source,
+                        trigger_kinds=kinds,
+                    ),
+                    context=context,
+                )
+            except errors.QueryError as e:
+                if not e.has_span():
+                    e.set_span(
+                        self.get_attribute_span(field.name)
+                    )
+                raise
         else:
             return super().compile_expr_field(
                 schema, context, field, value, track_schema_ref_exprs)
@@ -204,7 +262,7 @@ class TriggerCommand(
         field: so.Field[Any],
         value: Any,
     ) -> Optional[s_expr.Expression]:
-        if field.name == 'expr':
+        if field.name in {'expr', 'condition'}:
             return s_expr.Expression(text='false')
         else:
             raise NotImplementedError(f'unhandled field {field.name!r}')
@@ -233,7 +291,7 @@ class CreateTrigger(
         astnode: Type[qlast.DDLOperation],
     ) -> Optional[str]:
         if (
-            field in ('timing', 'kinds', 'scope', 'expr')
+            field in ('timing', 'condition', 'kinds', 'scope', 'expr')
             and issubclass(astnode, qlast.CreateTrigger)
         ):
             return field
@@ -259,7 +317,16 @@ class CreateTrigger(
                     astnode.expr, schema, context.modaliases,
                     context.localnames,
                 ),
-                source_context=astnode.expr.context,
+                span=astnode.expr.span,
+            )
+        if astnode.condition is not None:
+            cmd.set_attribute_value(
+                'condition',
+                s_expr.Expression.from_ast(
+                    astnode.condition, schema, context.modaliases,
+                    context.localnames,
+                ),
+                span=astnode.condition.span,
             )
 
         cmd.set_attribute_value('timing', astnode.timing)
@@ -305,7 +372,7 @@ class AlterTrigger(
             raise errors.SchemaDefinitionError(
                 f'cannot alter the definition of inherited trigger '
                 f'{self.scls.get_displayname(schema)}',
-                context=self.source_context
+                span=self.span
             )
 
         return schema

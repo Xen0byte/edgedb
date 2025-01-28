@@ -23,6 +23,7 @@ import sys
 import types
 import typing
 
+
 from edb.errors import EdgeQLSyntaxError
 
 from edb.edgeql import ast as qlast
@@ -48,12 +49,12 @@ def _parse_language(node):
     except ValueError:
         raise EdgeQLSyntaxError(
             f'{node.val} is not a valid language',
-            context=node.context) from None
+            span=node.span) from None
 
 
 def _validate_declarations(
     declarations: typing.Sequence[
-        typing.Union[qlast.ModuleDeclaration, qlast.NamedDDL]]
+        typing.Union[qlast.ModuleDeclaration, qlast.ObjectDDL]]
 ) -> None:
     # Check that top-level declarations either use fully-qualified
     # names or are module blocks.
@@ -68,15 +69,31 @@ def _validate_declarations(
             raise EdgeQLSyntaxError(
                 "only fully-qualified name is allowed in "
                 "top-level declaration",
-                context=decl.name.context)
+                span=decl.name.span)
+
+
+def extract_bases(bases, commands):
+    vbases = bases
+    vcommands = []
+    for command in commands:
+        if isinstance(command, qlast.AlterAddInherit):
+            if vbases:
+                raise EdgeQLSyntaxError(
+                    "specifying EXTENDING twice is not allowed",
+                    span=command.span)
+            vbases = command.bases
+        else:
+            vcommands.append(command)
+    return vbases, vcommands
 
 
 class NewNontermHelper:
     def __init__(self, modname):
         self.name = modname
 
-    def _new_nonterm(self, clsname, clsdict=None, clskwds=None,
-                     clsbases=(Nonterm,)):
+    def _new_nonterm(
+        self, clsname, clsdict=None, clskwds=None, clsbases=(Nonterm,)
+    ):
         if clsdict is None:
             clsdict = {}
         if clskwds is None:
@@ -96,82 +113,98 @@ class NewNontermHelper:
 
 class Semicolons(Nonterm):
     # one or more semicolons
+    @parsing.inline(0)
     def reduce_SEMICOLON(self, tok):
-        self.val = tok
+        pass
 
-    def reduce_Semicolons_SEMICOLON(self, semicolons, _):
-        self.val = semicolons.val
+    @parsing.inline(0)
+    def reduce_Semicolons_SEMICOLON(self, semicolons, semicolon):
+        pass
 
 
 class OptSemicolons(Nonterm):
+    @parsing.inline(0)
     def reduce_Semicolons(self, semicolons):
-        self.val = semicolons.val
+        pass
 
     def reduce_empty(self):
         self.val = None
 
 
 class ExtendingSimple(Nonterm):
+    @parsing.inline(1)
     def reduce_EXTENDING_SimpleTypeNameList(self, _, list):
-        self.val = list.val
+        pass
 
 
 class OptExtendingSimple(Nonterm):
+    @parsing.inline(0)
     def reduce_ExtendingSimple(self, extending):
-        self.val = extending.val
+        pass
 
     def reduce_empty(self):
         self.val = []
 
 
 class Extending(Nonterm):
+    @parsing.inline(1)
     def reduce_EXTENDING_TypeNameList(self, _, list):
-        self.val = list.val
+        pass
 
 
 class OptExtending(Nonterm):
+    @parsing.inline(0)
     def reduce_Extending(self, extending):
-        self.val = extending.val
+        pass
 
     def reduce_empty(self):
         self.val = []
+
+
+class CreateSimpleExtending(Nonterm):
+    def reduce_EXTENDING_SimpleTypeNameList(self, *kids):
+        self.val = qlast.AlterAddInherit(bases=kids[1].val)
 
 
 class OnExpr(Nonterm):
     # NOTE: the reason why we need parentheses around the expression
     # is to disambiguate whether the '{' following the expression is
     # meant to be a shape or a nested DDL/SDL block.
+    @parsing.inline(1)
     def reduce_ON_ParenExpr(self, _, expr):
-        self.val = expr.val
+        pass
 
 
 class OptOnExpr(Nonterm):
     def reduce_empty(self):
         self.val = None
 
+    @parsing.inline(0)
     def reduce_OnExpr(self, expr):
-        self.val = expr.val
+        pass
 
 
-class OptOnTypeExpr(Nonterm):
+class OptDeferred(Nonterm):
     def reduce_empty(self):
         self.val = None
 
-    def reduce_ON_FullTypeExpr(self, _, expr):
-        self.val = expr.val
+    def reduce_DEFERRED(self, _):
+        self.val = True
 
 
 class OptExceptExpr(Nonterm):
     def reduce_empty(self):
         self.val = None
 
+    @parsing.inline(1)
     def reduce_EXCEPT_ParenExpr(self, _, expr):
-        self.val = expr.val
+        pass
 
 
 class OptConcreteConstraintArgList(Nonterm):
+    @parsing.inline(1)
     def reduce_LPAREN_OptPosCallArgList_RPAREN(self, _lparen, list, _rparen):
-        self.val = list.val
+        pass
 
     def reduce_empty(self):
         self.val = []
@@ -181,8 +214,9 @@ class OptDefault(Nonterm):
     def reduce_empty(self):
         self.val = None
 
+    @parsing.inline(1)
     def reduce_EQUALS_Expr(self, _, expr):
-        self.val = expr.val
+        pass
 
 
 class ParameterKind(Nonterm):
@@ -197,25 +231,26 @@ class OptParameterKind(Nonterm):
     def reduce_empty(self):
         self.val = qltypes.ParameterKind.PositionalParam
 
+    @parsing.inline(0)
     def reduce_ParameterKind(self, *kids):
-        self.val = kids[0].val
+        pass
 
 
 class FuncDeclArgName(Nonterm):
     def reduce_Identifier(self, dp):
         self.val = dp.val
-        self.context = dp.context
+        self.span = dp.span
 
-    def reduce_ARGUMENT(self, dp):
+    def reduce_PARAMETER(self, dp):
         if dp.val[1].isdigit():
             raise EdgeQLSyntaxError(
                 f'numeric parameters are not supported',
-                context=dp.context)
+                span=dp.span)
         else:
             raise EdgeQLSyntaxError(
                 f"function parameters do not need a $ prefix, "
                 f"rewrite as '{dp.val[1:]}'",
-                context=dp.context)
+                span=dp.span)
 
 
 class FuncDeclArg(Nonterm):
@@ -236,21 +271,19 @@ class FuncDeclArg(Nonterm):
     ):
         raise EdgeQLSyntaxError(
             f'missing type declaration for the `{name.val}` parameter',
-            context=name.context
+            span=name.span
         )
 
 
 class FuncDeclArgList(parsing.ListNonterm, element=FuncDeclArg,
-                      separator=tokens.T_COMMA):
+                      separator=tokens.T_COMMA, allow_trailing_separator=True):
     pass
 
 
 class FuncDeclArgs(Nonterm):
-    def reduce_FuncDeclArgList_COMMA(self, list, _):
-        self.val = list.val
-
+    @parsing.inline(0)
     def reduce_FuncDeclArgList(self, list):
-        self.val = list.val
+        pass
 
 
 class ProcessFunctionParamsMixin:
@@ -265,24 +298,24 @@ class ProcessFunctionParamsMixin:
                 # A tuple here means that it's part of the "param := val"
                 raise EdgeQLSyntaxError(
                     f"Unexpected ':='",
-                    context=arg[1])
+                    span=arg[1])
 
             if arg.name in names:
                 raise EdgeQLSyntaxError(
                     f'duplicate parameter name `{arg.name}`',
-                    context=arg.context)
+                    span=arg.span)
             names.add(arg.name)
 
             if arg.kind is qltypes.ParameterKind.VariadicParam:
                 if variadic_arg is not None:
                     raise EdgeQLSyntaxError(
                         'more than one variadic argument',
-                        context=arg.context)
+                        span=arg.span)
                 elif last_named_arg is not None:
                     raise EdgeQLSyntaxError(
                         f'NAMED ONLY argument `{last_named_arg.name}` '
                         f'before VARIADIC argument `{arg.name}`',
-                        context=last_named_arg.context)
+                        span=last_named_arg.span)
                 else:
                     variadic_arg = arg
 
@@ -290,7 +323,7 @@ class ProcessFunctionParamsMixin:
                     raise EdgeQLSyntaxError(
                         f'VARIADIC argument `{arg.name}` '
                         f'cannot have a default value',
-                        context=arg.context)
+                        span=arg.span)
 
             elif arg.kind is qltypes.ParameterKind.NamedOnlyParam:
                 last_named_arg = arg
@@ -300,13 +333,13 @@ class ProcessFunctionParamsMixin:
                     raise EdgeQLSyntaxError(
                         f'positional argument `{arg.name}` '
                         f'follows NAMED ONLY argument `{last_named_arg.name}`',
-                        context=arg.context)
+                        span=arg.span)
 
                 if variadic_arg is not None:
                     raise EdgeQLSyntaxError(
                         f'positional argument `{arg.name}` '
                         f'follows VARIADIC argument `{variadic_arg.name}`',
-                        context=arg.context)
+                        span=arg.span)
 
             if arg.kind is qltypes.ParameterKind.PositionalParam:
                 if arg.default is None:
@@ -315,7 +348,7 @@ class ProcessFunctionParamsMixin:
                             f'positional argument `{arg.name}` without '
                             f'default follows positional argument '
                             f'`{last_pos_default_arg.name}` with default',
-                            context=arg.context)
+                            span=arg.span)
                 else:
                     last_pos_default_arg = arg
 
@@ -342,8 +375,9 @@ class OptTypeQualifier(Nonterm):
 
 
 class FunctionType(Nonterm):
+    @parsing.inline(0)
     def reduce_FullTypeExpr(self, expr):
-        self.val = expr.val
+        pass
 
 
 class FromFunction(Nonterm):
@@ -365,7 +399,7 @@ class FromFunction(Nonterm):
         if lang != qlast.Language.SQL:
             raise EdgeQLSyntaxError(
                 f'{lang} language is not supported in USING FUNCTION clause',
-                context=ident.context) from None
+                span=ident.span) from None
 
         self.val = qlast.FunctionCode(
             language=lang,
@@ -377,7 +411,7 @@ class FromFunction(Nonterm):
         if lang != qlast.Language.SQL:
             raise EdgeQLSyntaxError(
                 f'{lang} language is not supported in USING clause',
-                context=ident.context) from None
+                span=ident.span) from None
 
         self.val = qlast.FunctionCode(language=lang)
 
@@ -399,7 +433,7 @@ class ProcessFunctionBlockMixin:
                     if from_function is not None:
                         raise EdgeQLSyntaxError(
                             'more than one USING FUNCTION clause',
-                            context=node.context)
+                            span=node.span)
                     from_function = node.from_function
                     language = qlast.Language.SQL
 
@@ -407,7 +441,7 @@ class ProcessFunctionBlockMixin:
                     if code is not None or nativecode is not None:
                         raise EdgeQLSyntaxError(
                             'more than one USING <code> clause',
-                            context=node.context)
+                            span=node.span)
                     nativecode = node.nativecode
                     language = node.language
 
@@ -415,7 +449,7 @@ class ProcessFunctionBlockMixin:
                     if code is not None or nativecode is not None:
                         raise EdgeQLSyntaxError(
                             'more than one USING <code> clause',
-                            context=node.context)
+                            span=node.span)
                     code = node.code
                     language = node.language
 
@@ -435,14 +469,14 @@ class ProcessFunctionBlockMixin:
         ):
             raise EdgeQLSyntaxError(
                 'missing a USING clause',
-                context=block.context)
+                span=block.span)
 
         else:
             if from_expr and (from_function or code):
                 raise EdgeQLSyntaxError(
                     'USING SQL EXPRESSION is mutually exclusive with other '
                     'USING variants',
-                    context=block.context)
+                    span=block.span)
 
             props['code'] = qlast.FunctionCode(
                 language=language,
@@ -495,16 +529,18 @@ class OnSourceDeleteStmt(Nonterm):
 
 
 class OptWhenBlock(Nonterm):
+    @parsing.inline(1)
     def reduce_WHEN_ParenExpr(self, _, expr):
-        self.val = expr.val
+        pass
 
     def reduce_empty(self):
         self.val = None
 
 
 class OptUsingBlock(Nonterm):
+    @parsing.inline(1)
     def reduce_USING_ParenExpr(self, _, expr):
-        self.val = expr.val
+        pass
 
     def reduce_empty(self):
         self.val = None
@@ -605,7 +641,7 @@ class ExtensionVersion(Nonterm):
             raise EdgeQLSyntaxError(
                 'invalid extension version format',
                 details='Expected a SemVer-compatible format.',
-                context=version.context,
+                span=version.span,
             ) from None
 
         self.val = version
@@ -613,8 +649,9 @@ class ExtensionVersion(Nonterm):
 
 class OptExtensionVersion(Nonterm):
 
+    @parsing.inline(0)
     def reduce_ExtensionVersion(self, version):
-        self.val = version.val
+        pass
 
     def reduce_empty(self):
         self.val = None
@@ -627,7 +664,7 @@ class IndexArg(Nonterm):
         """
         raise EdgeQLSyntaxError(
             f'index parameters have to be NAMED ONLY',
-            context=kids[0].context)
+            span=kids[0].span)
 
     def reduce_kwarg_definition(self, kind, name, _, typemod, type, default):
         r"""%reduce ParameterKind FuncDeclArgName COLON \
@@ -636,7 +673,7 @@ class IndexArg(Nonterm):
         if kind.val is not qltypes.ParameterKind.NamedOnlyParam:
             raise EdgeQLSyntaxError(
                 f'index parameters have to be NAMED ONLY',
-                context=kind.context)
+                span=kind.span)
 
         self.val = qlast.FuncParam(
             kind=kind.val,
@@ -649,27 +686,25 @@ class IndexArg(Nonterm):
     def reduce_AnyIdentifier_ASSIGN_Expr(self, ident, _, expr):
         self.val = (
             ident.val,
-            ident.context,
+            ident.span,
             expr.val,
         )
 
     def reduce_FuncDeclArgName_OptDefault(self, name, default):
         raise EdgeQLSyntaxError(
             f'missing type declaration for the `{name.val}` parameter',
-            context=name.context)
+            span=name.span)
 
 
 class IndexArgList(parsing.ListNonterm, element=IndexArg,
-                   separator=tokens.T_COMMA):
+                   separator=tokens.T_COMMA, allow_trailing_separator=True):
     pass
 
 
 class OptIndexArgList(Nonterm):
-    def reduce_IndexArgList_COMMA(self, list, _):
-        self.val = list.val
-
+    @parsing.inline(0)
     def reduce_IndexArgList(self, list):
-        self.val = list.val
+        pass
 
     def reduce_empty(self):
         self.val = []
@@ -677,14 +712,16 @@ class OptIndexArgList(Nonterm):
 
 class IndexExtArgList(Nonterm):
 
-    def reduce_LPAREN_OptIndexArgList_RPAREN(self, _l, list, _r):
-        self.val = list.val
+    @parsing.inline(1)
+    def reduce_LPAREN_OptIndexArgList_RPAREN(self, *_):
+        pass
 
 
 class OptIndexExtArgList(Nonterm):
 
+    @parsing.inline(0)
     def reduce_IndexExtArgList(self, list):
-        self.val = list.val
+        pass
 
     def reduce_empty(self):
         self.val = []
@@ -697,13 +734,13 @@ class ProcessIndexMixin(ProcessFunctionParamsMixin):
             if isinstance(argval, qlast.FuncParam):
                 raise EdgeQLSyntaxError(
                     f"unexpected new parameter definition `{argval.name}`",
-                    context=argval.context)
+                    span=argval.span)
 
             argname, argname_ctx, arg = argval
             if argname in kwargs:
                 raise EdgeQLSyntaxError(
                     f"duplicate named argument `{argname}`",
-                    context=argname_ctx)
+                    span=argname_ctx)
 
             kwargs[argname] = arg
 
@@ -734,7 +771,7 @@ class ProcessIndexMixin(ProcessFunctionParamsMixin):
                 if code is not None:
                     raise EdgeQLSyntaxError(
                         'more than one USING <code> clause',
-                        context=node.context)
+                        span=node.span)
                 props['code'] = node
             else:
                 commands.append(node)
@@ -743,37 +780,3 @@ class ProcessIndexMixin(ProcessFunctionParamsMixin):
             props['commands'] = commands
 
         return props
-
-
-class IndexType(Nonterm, ProcessIndexMixin):
-
-    def reduce_NodeName_LPAREN_OptIndexArgList_RPAREN(
-        self, name, _l, args, _r
-    ):
-        kwargs = self._process_arguments(args.val)
-        self.val = qlast.IndexType(name=name, kwargs=kwargs)
-
-    def reduce_NodeName(self, name):
-        self.val = qlast.IndexType(name=name, kwargs={})
-
-
-class IndexTypeList(parsing.ListNonterm, element=IndexType,
-                    separator=tokens.T_COMMA):
-    pass
-
-
-class OptIndexTypeList(Nonterm):
-
-    def reduce_USING_IndexTypeList(self, _, list):
-        self.val = list.val
-
-    def reduce_empty(self):
-        self.val = []
-
-
-class UsingSQLIndex(Nonterm):
-
-    def reduce_USING_Identifier_BaseStringConstant(self, _, ident, const):
-        lang = _parse_language(ident)
-        code = const.val.value
-        self.val = qlast.IndexCode(language=lang, code=code)

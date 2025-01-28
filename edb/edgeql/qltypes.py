@@ -18,7 +18,9 @@
 
 
 from __future__ import annotations
-from typing import *
+from typing import Tuple, TypeVar, TYPE_CHECKING
+
+import enum
 
 from edb.common import enum as s_enum
 
@@ -136,9 +138,7 @@ class Cardinality(s_enum.StrEnum):
 
     @classmethod
     def from_schema_value(
-        cls,
-        required: bool,
-        card: SchemaCardinality
+        cls, required: bool, card: SchemaCardinality
     ) -> Cardinality:
         return _TUPLE_TO_CARD[(required, card)]
 
@@ -162,9 +162,10 @@ class Volatility(s_enum.OrderedEnumMixin, s_enum.StrEnum):
     Immutable = 'Immutable'
     Stable = 'Stable'
     Volatile = 'Volatile'
+    Modifying = 'Modifying'
 
     def is_volatile(self) -> bool:
-        return self is Volatility.Volatile
+        return self in (Volatility.Volatile, Volatility.Modifying)
 
     @classmethod
     def _missing_(cls, name):
@@ -188,6 +189,18 @@ class Multiplicity(s_enum.OrderedEnumMixin, s_enum.StrEnum):
 
     def is_duplicate(self) -> bool:
         return self is Multiplicity.DUPLICATE
+
+
+class IndexDeferrability(s_enum.OrderedEnumMixin, s_enum.StrEnum):
+    Prohibited = 'Prohibited'
+    Permitted = 'Permitted'
+    Required = 'Required'
+
+    def is_deferrable(self) -> bool:
+        return (
+            self is IndexDeferrability.Required
+            or self is IndexDeferrability.Permitted
+        )
 
 
 class AccessPolicyAction(s_enum.StrEnum):
@@ -240,18 +253,22 @@ class SchemaObjectClass(s_enum.StrEnum):
     ALIAS = 'ALIAS'
     ANNOTATION = 'ANNOTATION'
     ARRAY_TYPE = 'ARRAY TYPE'
+    BRANCH = 'BRANCH'
     CAST = 'CAST'
     CONSTRAINT = 'CONSTRAINT'
     DATABASE = 'DATABASE'
     EXTENSION = 'EXTENSION'
     EXTENSION_PACKAGE = 'EXTENSION PACKAGE'
+    EXTENSION_PACKAGE_MIGRATION = 'EXTENSION PACKAGE MIGRATION'
     FUTURE = 'FUTURE'
     FUNCTION = 'FUNCTION'
     GLOBAL = 'GLOBAL'
     INDEX = 'INDEX'
+    INDEX_MATCH = 'INDEX MATCH'
     LINK = 'LINK'
     MIGRATION = 'MIGRATION'
     MODULE = 'MODULE'
+    MULTIRANGE_TYPE = 'MULTIRANGE_TYPE'
     OPERATOR = 'OPERATOR'
     PARAMETER = 'PARAMETER'
     PROPERTY = 'PROPERTY'
@@ -309,6 +326,12 @@ class ConfigScope(s_enum.StrEnum):
 
     def to_edgeql(self) -> str:
         if self is ConfigScope.DATABASE:
-            return 'CURRENT DATABASE'
+            return 'CURRENT BRANCH'
         else:
             return str(self)
+
+
+class TypeTag(enum.IntEnum):
+    SCALAR = 0
+    TUPLE = 1
+    ARRAY = 2

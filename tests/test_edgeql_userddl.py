@@ -155,9 +155,9 @@ class TestEdgeQLUserDDL(tb.DDLTestCase):
     async def test_edgeql_userddl_10(self):
         with self.assertRaisesRegex(
                 edgedb.SchemaDefinitionError,
-                r'cannot create.*module math is read-only'):
+                r'cannot create.*module std is read-only'):
             await self.con.execute('''
-                CREATE FUNCTION math::func_10(
+                CREATE FUNCTION std::math::func_10(
                     a: str
                 ) -> str
                     USING EdgeQL $$
@@ -176,9 +176,9 @@ class TestEdgeQLUserDDL(tb.DDLTestCase):
     async def test_edgeql_userddl_12(self):
         with self.assertRaisesRegex(
                 edgedb.SchemaDefinitionError,
-                r'cannot create.*module math is read-only'):
+                r'cannot create.*module std is read-only'):
             await self.con.execute('''
-                CREATE TYPE math::Foo_11;
+                CREATE TYPE std::math::Foo_11;
             ''')
 
     async def test_edgeql_userddl_13(self):
@@ -210,9 +210,9 @@ class TestEdgeQLUserDDL(tb.DDLTestCase):
     async def test_edgeql_userddl_18(self):
         with self.assertRaisesRegex(
                 edgedb.SchemaDefinitionError,
-                r'cannot delete.*module math is read-only'):
+                r'cannot delete.*module std is read-only'):
             await self.con.execute('''
-                DROP MODULE math;
+                DROP MODULE std::math;
             ''')
 
     async def test_edgeql_userddl_19(self):
@@ -293,7 +293,7 @@ class TestEdgeQLUserDDL(tb.DDLTestCase):
     async def test_edgeql_userddl_23(self):
         with self.assertRaisesRegex(
             edgedb.UnsupportedFeatureError,
-            'user-defined pseudotypes are not supported'
+            'user-defined pseudo types are not supported'
         ):
             await self.con.execute('CREATE PSEUDO TYPE foo;')
 
@@ -376,4 +376,44 @@ class TestEdgeQLUserDDL(tb.DDLTestCase):
                     # allowed in user-space.
                     SET fallback := false;
                 }
+            ''')
+
+    async def test_edgeql_userddl_28(self):
+        with self.assertRaisesRegex(
+                edgedb.SchemaDefinitionError,
+                r"cannot extend system type"):
+            await self.con.execute(r'''
+            create type Foo extending cfg::ConfigObject;
+            ''')
+
+    async def test_edgeql_userddl_29(self):
+        await self.con.execute('''
+            configure session set __internal_testmode := true;
+            create module ext::_test;
+            create type ext::_test::X extending std::BaseObject;
+            configure session reset __internal_testmode;
+        ''')
+
+        async with self.assertRaisesRegexTx(
+                edgedb.SchemaDefinitionError, "module ext is read-only"):
+            await self.con.execute('''
+                create module ext::_test::foo;
+            ''')
+
+        async with self.assertRaisesRegexTx(
+                edgedb.SchemaDefinitionError, "module ext is read-only"):
+            await self.con.execute('''
+                create type ext::_test::foo;
+            ''')
+
+        async with self.assertRaisesRegexTx(
+                edgedb.SchemaDefinitionError, "module ext is read-only"):
+            await self.con.execute('''
+                alter type ext::_test::X { create property x -> str };
+            ''')
+
+        async with self.assertRaisesRegexTx(
+                edgedb.SchemaDefinitionError, "module ext is read-only"):
+            await self.con.execute('''
+                drop type ext::_test::X;
             ''')

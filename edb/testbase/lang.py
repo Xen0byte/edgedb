@@ -20,7 +20,7 @@
 
 
 from __future__ import annotations
-from typing import *
+from typing import Any, Optional, Type
 
 import typing
 import functools
@@ -28,7 +28,7 @@ import os
 import re
 import unittest
 
-from edb.common import context
+from edb.common import span
 from edb.common import debug
 from edb.common import devmode
 from edb.common import markup
@@ -38,19 +38,19 @@ from edb import errors
 from edb import edgeql
 from edb.edgeql import ast as qlast
 from edb.edgeql import parser as qlparser
+from edb.edgeql.parser import grammar as qlgrammar
 from edb.edgeql import qltypes
 
-from edb.server import defines
 from edb.server import compiler as edbcompiler
 
 from edb.schema import ddl as s_ddl
 from edb.schema import delta as sd
 from edb.schema import migrations as s_migrations  # noqa
-from edb.schema import name as sn
 from edb.schema import reflection as s_refl
 from edb.schema import schema as s_schema
 from edb.schema import std as s_std
 from edb.schema import utils as s_utils
+from edb.schema import modules as s_mod
 
 
 def must_fail(exc_type, exc_msg_re=None, **kwargs):
@@ -180,7 +180,7 @@ class BaseSyntaxTest(BaseDocTest):
     markup_dump_lexer: Optional[str] = None
 
     @classmethod
-    def get_parser(cls):
+    def get_grammar_token(cls) -> Type[qlgrammar.tokens.GrammarToken]:
         raise NotImplementedError
 
     def run_test(self, *, source, spec, expected=None):
@@ -188,16 +188,13 @@ class BaseSyntaxTest(BaseDocTest):
         if debug:
             markup.dump_code(source, lexer=self.markup_dump_lexer)
 
-        p = self.get_parser()
-
-        inast = p.parse(source)
+        inast = qlparser.parse(self.get_grammar_token(), source)
 
         if debug:
             markup.dump(inast)
 
         # make sure that the AST has context
-        #
-        context.ContextValidator().visit(inast)
+        span.SpanValidator().visit(inast)
 
         processed_src = self.ast_to_source(inast)
 
@@ -207,59 +204,6 @@ class BaseSyntaxTest(BaseDocTest):
         expected_src = source if expected is None else expected
 
         self.assert_equal(expected_src, processed_src)
-
-
-class TestCasesSetup:
-    def __init__(self, parsers: List[qlparser.EdgeQLParserBase]) -> None:
-        self.parsers = parsers
-
-
-def get_test_cases_setup(
-    cases: Iterable[unittest.TestCase],
-) -> Optional[TestCasesSetup]:
-    parsers: List[qlparser.EdgeQLParserBase] = []
-
-    for case in cases:
-        if not hasattr(case, 'get_parser'):
-            continue
-
-        parser = case.get_parser()
-        if not parser:
-            continue
-
-        parsers.append(parser)
-
-    if not parsers:
-        return None
-    else:
-        return TestCasesSetup(parsers)
-
-
-def run_test_cases_setup(setup: TestCasesSetup, jobs: int) -> None:
-    qlparser.preload(
-        parsers=setup.parsers,
-        allow_rebuild=True,
-        paralellize=jobs > 1,
-    )
-
-
-class AstValueTest(BaseDocTest):
-    def run_test(self, *, source, spec=None, expected=None):
-        debug = bool(os.environ.get(self.parser_debug_flag))
-        if debug:
-            markup.dump_code(source, lexer=self.markup_dump_lexer)
-
-        p = self.get_parser()
-
-        inast = p.parse(source)
-
-        if debug:
-            markup.dump(inast)
-
-        for var in inast.definitions[0].variables:
-            asttype, val = expected[var.name]
-            self.assertIsInstance(var.value, asttype)
-            self.assertEqual(var.value.value, val)
 
 
 _std_schema = None
@@ -278,8 +222,8 @@ def _load_std_schema():
                 std_dirs_hash, 'transient-stdschema.pickle')
 
         if schema is None:
-            schema = s_schema.FlatSchema()
-            for modname in [*s_schema.STD_SOURCES, sn.UnqualName('_testmode')]:
+            schema = s_schema.EMPTY_SCHEMA
+            for modname in [*s_schema.STD_SOURCES, *s_schema.TESTMODE_SOURCES]:
                 schema = s_std.load_std_module(schema, modname)
             schema, _ = s_std.make_schema_version(schema)
             schema, _ = s_std.make_global_schema_version(schema)
@@ -311,8 +255,7 @@ def _load_reflection_schema():
             std_schema = _load_std_schema()
             reflection = s_refl.generate_structure(std_schema)
             classlayout = reflection.class_layout
-            context = sd.CommandContext()
-            context.stdmode = True
+            context = sd.CommandContext(stdmode=True)
             reflschema = reflection.intro_schema_delta.apply(
                 std_schema, context)
 
@@ -355,7 +298,7 @@ class BaseSchemaTest(BaseDocTest):
             cls.schema = _load_std_schema()
 
     @classmethod
-    def run_ddl(cls, schema, ddl, default_module=defines.DEFAULT_MODULE_ALIAS):
+    def run_ddl(cls, schema, ddl, default_module=s_mod.DEFAULT_MODULE_ALIAS):
         statements = edgeql.parse_block(ddl)
 
         current_schema = schema
@@ -370,7 +313,7 @@ class BaseSchemaTest(BaseDocTest):
                 if target_schema is None:
                     target_schema = _load_std_schema()
 
-                migration_target = s_ddl.apply_sdl(
+                migration_target, _ = s_ddl.apply_sdl(
                     stmt.target,
                     base_schema=target_schema,
                     current_schema=current_schema,
@@ -387,7 +330,7 @@ class BaseSchemaTest(BaseDocTest):
                     raise errors.QueryError(
                         'unexpected POPULATE MIGRATION:'
                         ' not currently in a migration block',
-                        context=stmt.context,
+                        span=stmt.span,
                     )
 
                 migration_diff = s_ddl.delta_schemas(
@@ -436,7 +379,7 @@ class BaseSchemaTest(BaseDocTest):
                     raise errors.QueryError(
                         'unexpected COMMIT MIGRATION:'
                         ' not currently in a migration block',
-                        context=stmt.context,
+                        span=stmt.span,
                     )
 
                 last_migration = current_schema.get_last_migration()
@@ -467,7 +410,7 @@ class BaseSchemaTest(BaseDocTest):
                 migration_target = None
                 migration_script = []
 
-            elif isinstance(stmt, qlast.DDL):
+            elif isinstance(stmt, qlast.DDLCommand):
                 if migration_target is not None:
                     migration_script.append(stmt)
                     ddl_plan = None
@@ -495,7 +438,8 @@ class BaseSchemaTest(BaseDocTest):
 
     @classmethod
     def load_schema(
-            cls, source: str, modname: Optional[str]=None) -> s_schema.Schema:
+        cls, source: str, modname: Optional[str] = None
+    ) -> s_schema.Schema:
         if not modname:
             modname = cls.DEFAULT_MODULE
         sdl_schema = qlparser.parse_sdl(f'module {modname} {{ {source} }}')
@@ -504,7 +448,7 @@ class BaseSchemaTest(BaseDocTest):
             sdl_schema,
             base_schema=schema,
             current_schema=schema,
-        )
+        )[0]
 
     @classmethod
     def get_schema_script(cls):
@@ -516,7 +460,7 @@ class BaseSchemaTest(BaseDocTest):
             m = re.match(r'^SCHEMA(?:_(\w+))?', name)
             if m:
                 module_name = (m.group(1)
-                               or 'default').lower().replace('__', '.')
+                               or 'default').lower().replace('_', '::')
 
                 if '\n' in val:
                     # Inline schema source

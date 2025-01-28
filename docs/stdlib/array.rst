@@ -33,7 +33,7 @@ Arrays
       - Finds the index of an element in the array.
 
     * - :eql:func:`array_join`
-      - Renders an array to a string.
+      - Renders an array to a string or byte-string.
 
     * - :eql:func:`array_fill`
       - :eql:func-desc:`array_fill`
@@ -129,10 +129,18 @@ Reference
     Array types may also appear in schema declarations:
 
     .. code-block:: sdl
+        :version-lt: 3.0
 
         type Person {
             property str_array -> array<str>;
             property json_array -> array<json>;
+        }
+
+    .. code-block:: sdl
+
+        type Person {
+            str_array: array<str>;
+            json_array: array<json>;
         }
 
     See also the list of standard :ref:`array functions <ref_std_array>`, as
@@ -289,28 +297,43 @@ Reference
     .. note::
 
         The ordering of the returned set is not guaranteed.
+        However, if it is wrapped in a call to :eql:func:`enumerate`,
+        the assigned indexes are guaranteed to match the array.
 
     .. code-block:: edgeql-repl
 
         db> select array_unpack([2, 3, 5]);
         {3, 2, 5}
 
+        db> select enumerate(array_unpack([2, 3, 5]));
+        {(1, 3), (0, 2), (2, 5)}
+
 
 ----------
 
 
 .. eql:function:: std::array_join(array: array<str>, delimiter: str) -> str
+                  std::array_join(array: array<bytes>, \
+                                  delimiter: bytes) -> bytes
 
     :index: join array_to_string implode
 
-    Renders an array to a string.
+    Renders an array to a string or byte-string.
 
     Join a string array into a single string using a specified *delimiter*:
 
     .. code-block:: edgeql-repl
 
-        db> select to_str(['one', 'two', 'three'], ', ');
+        db> select array_join(['one', 'two', 'three'], ', ');
         {'one, two, three'}
+
+    Similarly, an array of :eql:type:`bytes` can be joined as a single value
+    using a specified *delimiter*:
+
+    .. code-block:: edgeql-repl
+
+        db> select array_join([b'\x01', b'\x02', b'\x03'], b'\xff');
+        {b'\x01\xff\x02\xff\x03'}
 
 
 ----------
@@ -322,7 +345,7 @@ Reference
 
     Returns an array of the specified size, filled with the provided value.
 
-    Create anarray of size *n* where every element has the value *val*.
+    Create an array of size *n* where every element has the value *val*.
 
     .. code-block:: edgeql-repl
 

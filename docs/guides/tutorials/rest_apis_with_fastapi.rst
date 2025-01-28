@@ -23,25 +23,21 @@ endpoints.
 Watch our video tour of this example project to get a preview of what you'll be
 building in this guide:
 
-.. lint-off
-
-.. raw:: html
-
-    <div style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; max-width: 100%; height: auto;">
-       <iframe src="https://www.youtube.com/embed/OZ_UURzDkow" frameborder="0" allowfullscreen style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></iframe>
-    </div>
-
-.. lint-on
+.. edb:youtube-embed:: OZ_UURzDkow
 
 Prerequisites
 =============
 
 Before we start, make sure you've :ref:`installed <ref_admin_install>` the
-``edgedb`` command line tool. In this tutorial, we'll use Python 3.10 and take
-advantage of the asynchronous I/O paradigm to communicate with the database
-more efficiently. If you want to skip ahead, the completed source code for this
-API can be found `in our examples repo
-<https://github.com/edgedb/edgedb-examples/tree/main/fastapi-crud>`_.
+``edgedb`` command line tool. For this tutorial, we'll use Python 3.10 to 
+take advantage of the asynchronous I/O paradigm to communicate with the 
+database more efficiently. You can use newer versions of Python if you prefer, 
+but you may need to adjust the code accordingly. If you want to skip ahead, 
+the completed source code for this API can be found `in our examples repo
+<https://github.com/edgedb/edgedb-examples/tree/main/fastapi-crud>`_. If you
+want to check out an example with EdgeDB Auth, you can find that in the same
+repo in the `fastapi-crud-auth folder
+<https://github.com/edgedb/edgedb-examples/tree/main/fastapi-crud-auth>`_.
 
 
 Create a project directory
@@ -58,7 +54,7 @@ To get started, create a directory for your project and change into it.
 Install the dependencies
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-Create a Python 3.10 virtual environment, activate it, and
+Create a Python virtual environment, activate it, and
 install the dependencies with this command (in Linux/macOS; see the following
 note for help with Windows):
 
@@ -147,32 +143,31 @@ project init``, but you'll need to fill it with your schema. This is what our
 datatypes look like:
 
 .. code-block:: sdl
-
-    # dbschema/default.esdl
+    :caption: dbschema/default.esdl
 
     module default {
       abstract type Auditable {
-        required property created_at -> datetime {
+        required created_at: datetime {
           readonly := true;
           default := datetime_current();
         }
       }
 
       type User extending Auditable {
-        required property name -> str {
+        required name: str {
           constraint exclusive;
           constraint max_len_value(50);
         };
       }
 
       type Event extending Auditable {
-        required property name -> str {
+        required name: str {
           constraint exclusive;
           constraint max_len_value(50);
         }
-        property address -> str;
-        property schedule -> datetime;
-        link host -> User;
+        address: str;
+        schedule: datetime;
+        link host: User;
       }
     }
 
@@ -229,22 +224,22 @@ should output very close to the schema we added in the ``default.esdl`` file:
 
     module default {
         abstract type Auditable {
-            property created_at -> std::datetime {
+            required property created_at: std::datetime {
                 default := (std::datetime_current());
                 readonly := true;
             };
         };
         type Event extending default::Auditable {
-            link host -> default::User;
-            property address -> std::str;
-            required property name -> std::str {
+            link host: default::User;
+            property address: std::str;
+            required property name: std::str {
                 constraint std::exclusive;
                 constraint std::max_len_value(50);
             };
-            property schedule -> std::datetime;
+            property schedule: std::datetime;
         };
         type User extending default::Auditable {
-            required property name -> std::str {
+            required property name: std::str {
                 constraint std::exclusive;
                 constraint std::max_len_value(50);
             };
@@ -298,6 +293,7 @@ file. It's the same one we would have written inline in our Python code as
 shown in the code block above:
 
 .. code-block:: edgeql
+    :caption: app/queries/get_users.edgeql
 
     select User {name, created_at};
 
@@ -332,8 +328,8 @@ the following code:
 .. lint-off
 
 .. code-block:: python
+    :caption: app/users.py
 
-    # app/users.py
     from __future__ import annotations
 
     import datetime
@@ -395,8 +391,8 @@ will send the 404 (not found) response to the user.
 .. lint-off
 
 .. code-block:: python
+    :caption: app/users.py
 
-    # app/users.py
     ...
     if not name:
         users = await get_users_qry.get_users(client)
@@ -423,8 +419,8 @@ that in the ``main.py`` module. Create ``app/main.py`` and open it in your
 editor. Here's the content of the module:
 
 .. code-block:: python
+    :caption: app/main.py
 
-    # app/main.py
     from __future__ import annotations
 
     from fastapi import FastAPI
@@ -496,6 +492,7 @@ and create the new query we'll need.
 Create and open ``app/queries/create_user.edgeql`` and fill it with this query:
 
 .. code-block:: edgeql
+    :caption: app/queries/create_user.edgeql
 
     select (insert User {
         name := <str>$name
@@ -515,8 +512,8 @@ we're ready to open ``app/users.py`` again and add the POST endpoint. First,
 import the generated function for the new query:
 
 .. code-block:: python
+    :caption: app/users.py
 
-    # app/users.py
     ...
     from .queries import create_user_async_edgeql as create_user_qry
     from .queries import get_user_by_name_async_edgeql as get_user_by_name_qry
@@ -528,8 +525,8 @@ Then write the endpoint to call that function:
 .. lint-off
 
 .. code-block:: python
+    :caption: app/users.py
 
-    # app/users.py
     ...
     @router.post("/users", status_code=HTTPStatus.CREATED)
     async def post_user(user: RequestData) -> create_user_qry.CreateUserResult:
@@ -598,6 +595,7 @@ We'll start again with the query. Create a new file in ``app/queries`` named
 ``update_user.edgeql``. Open it in your editor and enter this query:
 
 .. code-block:: edgeql
+    :caption: app/queries/update_user.edgeql
 
     select (
         update User filter .name = <str>$current_name
@@ -610,8 +608,8 @@ and add the endpoint over in ``app/users.py``.
 .. lint-off
 
 .. code-block:: python
+    :caption: app/users.py
 
-    # app/users.py
     ...
     from .queries import create_user_async_edgeql as create_user_qry
     from .queries import get_user_by_name_async_edgeql as get_user_by_name_qry
@@ -707,20 +705,21 @@ Start by creating ``app/queries/delete_user.edgeql`` and filling it with this
 query:
 
 .. code-block:: edgeql
+    :caption: app/queries/delete_user.edgeql
 
     select (
         delete User filter .name = <str>$name
     ) {name, created_at};
 
-Generate the new function by again running ``edgeql-py``. Then re-open
+Generate the new function by again running ``edgedb-py``. Then re-open
 ``app/users.py``. This endpoint's code will look similar to the endpoints
 we've already written:
 
 .. lint-off
 
 .. code-block:: python
+    :caption: app/users.py
 
-    # app/users.py
     ...
     from .queries import create_user_async_edgeql as create_user_qry
     from .queries import delete_user_async_edgeql as delete_user_qry
@@ -787,7 +786,8 @@ First, we need a query. Create a file ``app/queries/create_event.edgeql`` and
 drop this query into it:
 
 .. code-block:: edgeql
-   
+    :caption: app/queries/create_event.edgeql
+
     with name := <str>$name,
         address := <str>$address,
         schedule := <str>$schedule,
@@ -812,8 +812,8 @@ time to code up the endpoint to use that freshly generated query.
 .. lint-off
 
 .. code-block:: python
+    :caption: app/events.py
 
-    # app/events.py
     from __future__ import annotations
 
     from http import HTTPStatus
@@ -886,8 +886,8 @@ API in ``app/main.py``. Open that file, and update the import on line 6 to also
 import ``events``:
 
 .. code-block:: python
+    :caption: app/main.py
 
-    # app/main.py
     ...
     from app import users, events
     ...
@@ -895,8 +895,8 @@ import ``events``:
 Drop down to the bottom of ``main.py`` and include the events router:
 
 .. code-block:: python
+    :caption: app/main.py
 
-    # app/main.py
     ...
     fast_api.include_router(events.router)
 
@@ -934,6 +934,7 @@ endpoints. Start by creating a file in ``app/queries`` named
 ``get_events.edgeql``. This one is really straightforward:
 
 .. code-block:: edgeql
+    :caption: app/queries/get_events.edgeql
 
     select Event {name, address, schedule, host : {name}};
 
@@ -941,6 +942,7 @@ Save that one and create ``app/queries/get_event_by_name.edgeql`` with this
 query:
 
 .. code-block:: edgeql
+    :caption: app/queries/get_event_by_name.edgeql
 
     select Event {
         name, address, schedule,
@@ -951,6 +953,7 @@ Those two will handle queries for ``GET /events``. Next, create
 ``app/queries/update_event.edgeql`` with this query:
 
 .. code-block:: edgeql
+    :caption: app/queries/update_event.edgeql
 
     with current_name := <str>$current_name,
         new_name := <str>$name,
@@ -972,6 +975,7 @@ That query will handle PUT requests. The last method left is DELETE. Create
 ``app/queries/delete_event.edgeql`` and put this query in it:
 
 .. code-block:: edgeql
+    :caption: app/queries/delete_event.edgeql
 
     select (
         delete Event filter .name = <str>$name
@@ -985,8 +989,8 @@ coding GET. Import the newly generated queries and write the GET endpoint in
 .. lint-off
 
 .. code-block:: python
+    :caption: app/events.py
 
-    # app/events.py
     ...
     from .queries import create_event_async_edgeql as create_event_qry
     from .queries import delete_event_async_edgeql as delete_event_qry
@@ -1003,8 +1007,6 @@ coding GET. Import the newly generated queries and write the GET endpoint in
             return events
         else:
             event = await get_event_by_name_qry.get_event_by_name(client, name=name)
-                client, name=name
-            )
             if not event:
                 raise HTTPException(
                     status_code=HTTPStatus.NOT_FOUND,
@@ -1074,8 +1076,8 @@ Let's finish off the events API with the PUT and DELETE endpoints. Open
 .. lint-off
 
 .. code-block:: python
+    :caption: app/events.py
 
-    # app/events.py
     ...
     @router.put("/events")
     async def put_event(
@@ -1139,11 +1141,11 @@ Browse the endpoints using the native OpenAPI doc
 FastAPI automatically generates OpenAPI schema from the API endpoints and uses
 those to build the API docs. While the ``uvicorn`` server is running, go to
 your browser and head over to
-`http://localhost:5001/docs <http://locahost:5001/docs>`_. You should see an
+`http://localhost:5001/docs <http://localhost:5001/docs>`_. You should see an
 API navigator like this:
 
 .. image::
-    https://www.edgedb.com/docs/tutorials/fastapi/openapi.png
+    /docs/tutorials/fastapi/openapi.png
     :alt: FastAPI docs navigator
     :width: 100%
 
@@ -1153,7 +1155,7 @@ and then click on the **Try it out** button. You can do it in the UI as
 follows:
 
 .. image::
-    https://www.edgedb.com/docs/tutorials/fastapi/put.png
+    /docs/tutorials/fastapi/put.png
     :alt: FastAPI docs PUT events API
     :width: 100%
 
@@ -1161,12 +1163,422 @@ Clicking the **execute** button will make the request and return the following
 payload:
 
 .. image::
-    https://www.edgedb.com/docs/tutorials/fastapi/put_result.png
+    /docs/tutorials/fastapi/put_result.png
     :alt: FastAPI docs PUT events API result
     :width: 100%
 
 You can do the same to test ``DELETE /events``, just make sure you give it
 whatever name you set for the event in your previous test of the PUT method.
+
+Integrating EdgeDB Auth
+=======================
+
+EdgeDB Auth provides a built-in authentication solution that is deeply
+integrated with the EdgeDB server. This section outlines how to enable and
+configure EdgeDB Auth in your application schema, manage authentication
+providers, and set key configuration parameters.
+
+Setting up EdgeDB Auth
+^^^^^^^^^^^^^^^^^^^^^^^
+
+To start using EdgeDB Auth, you must first enable it in your schema. Add the
+following to your schema definition:
+
+.. code-block:: sdl
+
+    using extension auth;   
+
+Once added, make sure to apply the schema changes by migrating your database
+schema.
+
+.. code-block:: bash
+
+    $ edgedb migration create
+    $ edgedb migrate
+
+
+Configuring EdgeDB Auth
+-----------------------
+
+The configuration of EdgeDB Auth involves setting various parameters to secure
+and tailor authentication to your needs. For now, we'll focus on the essential
+parameters to get started. You can configure these settings through a Python 
+script, which is recommended for scalability, or you can use the EdgeDB UI for 
+a more user-friendly approach.
+
+**Auth Signing Key**
+
+This key is used to sign the JWTs for internal operations. Although it's not
+necessary for your application's functionality, it's essential for secure
+token handling. To generate a secure key, you can use OpenSSL or Python with
+the following commands:
+
+Using OpenSSL:
+
+.. code-block:: bash
+
+    $ openssl rand -base64 32
+
+Using Python:
+
+.. code-block:: python
+
+    import secrets
+    print(secrets.token_urlsafe(32))
+
+Once you have generated your key, configure it in EdgeDB like this:
+
+.. code-block:: edgeql
+
+    CONFIGURE CURRENT BRANCH SET
+    ext::auth::AuthConfig::auth_signing_key := '<your-generated-key>';
+
+**Allowed redirect URLs**
+
+This configuration ensures that redirections are limited to domains under your
+control. The ``allowed_redirect_urls`` setting specifies URLs that the Auth
+extension can safely redirect to after authentication. A URL must exactly match
+or be a sub-path of a URL in the list to be considered valid.
+
+To configure this in your application:
+
+.. code-block:: edgeql
+
+    CONFIGURE CURRENT BRANCH SET
+    ext::auth::AuthConfig::allowed_redirect_urls := {
+        'http://localhost:8000',
+        'http://localhost:8000/auth'
+    };
+
+Enabling authentication providers
+---------------------------------
+
+You need to configure at least one authentication provider to use EdgeDB Auth.
+This can be done via the EdgeDB UI or directly through queries.
+
+In this example, we'll configure a email and password provider. You can add 
+it with the following query:
+
+.. code-block:: edgeql
+
+    CONFIGURE CURRENT BRANCH
+    INSERT ext::auth::EmailPasswordProviderConfig {
+        require_verification := false,
+    };
+
+.. note::
+
+    ``require_verification`` defaults to ``true``. In this example, we're 
+    setting it to ``false`` to simplify the setup. In a production environment, 
+    you should set it to ``true`` to ensure that users verify their email 
+    addresses before they can log in.
+
+If you use the Email and Password provider, in addition to the
+``require_verification`` configuration, you’ll need to configure SMTP to allow
+EdgeDB to send email verification and password reset emails on your behalf.
+
+Here is an example of setting a local SMTP server, in this case using a
+product called `Mailpit <https://mailpit.axllent.org/docs/>`__ which is
+great for testing in development:
+
+.. code-block:: edgeql
+
+    CONFIGURE CURRENT BRANCH SET
+    ext::auth::SMTPConfig::sender := 'hello@example.com';
+
+    CONFIGURE CURRENT BRANCH SET
+    ext::auth::SMTPConfig::host := 'localhost';
+
+    CONFIGURE CURRENT BRANCH SET
+    ext::auth::SMTPConfig::port := <int32>1025;
+
+    CONFIGURE CURRENT BRANCH SET
+    ext::auth::SMTPConfig::security := 'STARTTLSOrPlainText';
+
+    CONFIGURE CURRENT BRANCH SET
+    ext::auth::SMTPConfig::validate_certs := false;
+
+You can query the database configuration to discover which providers are 
+configured with the following query:
+
+.. code-block:: edgeql
+
+  select cfg::Config.extensions[is ext::auth::AuthConfig].providers {
+      name,
+      [is ext::auth::OAuthProviderConfig].display_name,
+  };
+
+Implementing authentication with FastAPI
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Below, we provide a detailed guide to setting up authentication using FastAPI,
+including both sign-in and sign-up functionalities.
+
+PKCE flow for enhanced security
+-------------------------------
+
+The PKCE (Proof Key for Code Exchange) flow enhances security in server-to-server
+authentication by generating a unique verifier and its corresponding challenge.
+First, your server creates a 32-byte Base64 URL-encoded verifier, stores it in an
+HttpOnly cookie, hashes it with SHA256, and then encodes it to form the challenge.
+
+This implementation ensures enhanced security by preventing token leakage and is
+tailored specifically for server-to-server interactions.
+
+Add the following code to your FastAPI application to generate the PKCE:
+
+.. code-block:: python
+    :caption: app/auth.py
+
+    import secrets
+    import hashlib
+    import base64
+
+    def generate_pkce():
+        verifier = secrets.token_urlsafe(32)
+        challenge = hashlib.sha256(verifier.encode()).digest()
+        challenge_base64 = base64.urlsafe_b64encode(challenge).decode('utf-8').rstrip('=')
+        return verifier, challenge_base64
+
+User registration and authentication
+------------------------------------
+
+Next, we're going to create endpoints in FastAPI to handle user registration
+(sign-up) and user login (sign-in):
+
+**Sign-up endpoint**
+
+.. code-block:: python
+    :caption: app/auth.py
+
+    from fastapi import APIRouter, HTTPException, Request
+    from fastapi.responses import JSONResponse
+    import httpx
+
+    router = APIRouter()
+    
+    # Value should be:
+    # {protocol}://${host}:${port}/branch/${branch}/ext/auth/
+    EDGEDB_AUTH_BASE_URL = os.getenv('EDGEDB_AUTH_BASE_URL')
+
+    @router.post("/auth/signup")
+    async def handle_signup(request: Request):
+        body = await request.json()
+        email = body.get("email")
+        password = body.get("password")
+
+        if not email or not password:
+            raise HTTPException(status_code=400, detail="Missing email or password")
+
+        verifier, challenge = generate_pkce()
+        register_url = f"{EDGEDB_AUTH_BASE_URL}/register"
+        register_response = httpx.post(register_url, json={
+            "challenge": challenge,
+            "email": email,
+            "password": password,
+            "provider": "builtin::local_emailpassword",
+            "verify_url": "http://localhost:8000/auth/verify",
+        })
+
+        if register_response.status_code != 200 and register_response.status_code != 201:
+            return JSONResponse(status_code=400, content={"message": "Registration failed"})
+
+        code = register_response.json().get("code")
+        token_url = f"{EDGEDB_AUTH_BASE_URL}/token"
+        token_response = httpx.get(token_url, params={"code": code, "verifier": verifier})
+
+        if token_response.status_code != 200:
+            return JSONResponse(status_code=400, content={"message": "Token exchange failed"})
+
+        auth_token = token_response.json().get("auth_token")
+
+        response = JSONResponse(content={"message": "User registered"})
+        response.set_cookie(key="edgedb-auth-token", value=auth_token, httponly=True, secure=True, samesite='strict')
+        return response
+
+The sign-up endpoint sends a POST request to the EdgeDB Auth server to register
+a new user. It also sets the auth token as an HttpOnly cookie in the response.
+
+**Sign-in endpoint**
+
+.. code-block:: python
+    :caption: app/auth.py
+
+    @router.post("/auth/signin")
+    async def handle_signin(request: Request):
+        body = await request.json()
+        email = body.get("email")
+        password = body.get("password")
+        provider = body.get("provider")
+
+        if not email or not password or not provider:
+            raise HTTPException(status_code=400, detail="Missing email, password, or provider.")
+
+        verifier, challenge = generate_pkce()
+        authenticate_url = f"{EDGEDB_AUTH_BASE_URL}/authenticate"
+        response = httpx.post(authenticate_url, json={
+            "challenge": challenge,
+            "email": email,
+            "password": password,
+            "provider": provider,
+        })
+
+        if response.status_code != 200:
+            return JSONResponse(status_code=400, content={"message": "Authentication failed"})
+
+        code = response.json().get("code")
+        token_url = f"{EDGEDB_AUTH_BASE_URL}/token"
+        token_response = httpx.get(token_url, params={"code": code, "verifier": verifier})
+
+        if token_response.status_code != 200:
+            return JSONResponse(status_code=400, content={"message": "Token exchange failed"})
+
+        auth_token = token_response.json().get("auth_token")
+        response = JSONResponse(content={"message": "Authentication successful"})
+        response.set_cookie(key="edgedb-auth-token", value=auth_token, httponly=True, secure=True, samesite='strict')
+        return response
+
+The sign-in endpoint sends a POST request to the EdgeDB Auth server to authenticate
+a user. It then retrieves the code from the response and exchanges it for an auth 
+token. The token is set as an HttpOnly cookie in the response.
+
+**Add the auth endpoints to the FastAPI application**
+
+Finally, add the auth endpoints to the FastAPI application:
+
+.. code-block:: python-diff
+    :caption: app/main.py
+
+    + fast_api.include_router(events.router)
+
+Creating a new user in the sign-up endpoint
+-------------------------------------------
+
+Now, let's automatically create a new user in the database when a user signs up.
+We'll use the ``create_user_async_edgeql`` query we generated earlier 
+to achieve this, but we'll need to modify it slightly to link it to the
+EdgeDB Auth identity.
+
+First, let's update the EdgeDB schema to include a new field in the User type
+to store the EdgeDB Auth identity and a new ``current_user`` type.
+
+.. code-block:: sdl-diff
+    :caption: dbschema/default.esdl
+    
+    + global current_user := assert_single(
+    +     ((
+    +         select User
+    +         filter .identity = global ext::auth::ClientTokenIdentity
+    +     ))
+    + );
+      
+      type User extending Auditable {
+    +    required identity: ext::auth::Identity;
+         required name: str {
+            constraint exclusive;
+            constraint max_len_value(50);
+         };
+      }
+
+After updating the schema, run the following command to apply the changes:
+
+.. code-block:: bash
+
+    $ edgedb migration create
+    $ edgedb migrate
+
+Next, update the ``create_user_async_edgeql`` query to include the identity:
+
+.. code-block:: edgeql-diff
+    :caption: app/queries/create_user.edgeql
+
+      select (
+          insert User {
+            name := <str>$name,
+    +       identity := <ext::auth::Identity><uuid>$identity_id,
+          }) {
+          name,
+          created_at,
+      };
+
+Run ``edgedb-py`` to generate the new function. Now, let's update the sign-up
+endpoint to create a new user in the database. We need to do a few things:
+
+1. Import ``edgedb``.
+
+2. Create an EdgeDB client.
+
+3. Get the identity ID from the EdgeDB Auth server response.
+
+4. Create a new user in the database using the ``create_user_async_edgeql``
+   query.
+
+
+.. code-block:: python-diff
+
+    + import edgedb
+    + client = edgedb.create_async_client()
+
+      @router.post("/auth/signup")
+      async def handle_signup(request: Request):
+          body = await request.json()
+          email = body.get("email")
+    +     name = body.get("name")
+          password = body.get("password")
+
+    -     if not email or not password:
+    +     if not email or not password or not name:
+    -         raise HTTPException(status_code=400, detail="Missing email or password.")
+    +         raise HTTPException(status_code=400, detail="Missing email, password, or name.")
+      
+          verifier, challenge = generate_pkce()
+          register_url = f"{EDGEDB_AUTH_BASE_URL}/register"
+          register_response = httpx.post(register_url, json={
+              "challenge": challenge,
+              "email": email,
+              "password": password,
+              "provider": "builtin::local_emailpassword",
+              "verify_url": "http://localhost:8000/auth/verify",
+          })
+      
+          if register_response.status_code != 200 and register_response.status_code != 201:
+              return JSONResponse(status_code=400, content={"message": "Registration failed"})
+          
+          code = register_response.json().get("code")
+          token_url = f"{EDGEDB_AUTH_BASE_URL}/token"
+          token_response = httpx.get(token_url, params={"code": code, "verifier": verifier})
+      
+          if token_response.status_code != 200:
+              return JSONResponse(status_code=400, content={"message": "Token exchange failed"})
+
+          auth_token = token_response.json().get("auth_token")
+    +     identity_id = token_response.json().get("identity_id")
+    +     try:
+    +         created_user = await create_user_qry.create_user(client, name=name, identity_id=identity_id)
+    +     except edgedb.errors.ConstraintViolationError:
+    +         raise HTTPException(
+    +             status_code=400,
+    +             detail={"error": f"User with email '{email}' already exists."},
+    +         )
+              
+          response = JSONResponse(content={"message": "User registered"})
+          response.set_cookie(key="edgedb-auth-token", value=auth_token, httponly=True, secure=True, samesite='strict')
+          return response
+
+You can now test the sign-up endpoint by sending a POST request to
+``http://localhost:8000/auth/signup`` with the following payload:
+
+.. code-block:: json
+
+    {
+        "email": "jonathan@example.com",
+        "name": "Jonathan Harker",
+        "password": "password"
+    }
+
+If the request is successful, you should see a response with the message
+``User registered``.
+ 
 
 Wrapping up
 ===========
@@ -1174,12 +1586,16 @@ Wrapping up
 Now you have a fully functioning events API in FastAPI backed by EdgeDB. If you
 want to see all the source code for the completed project, you'll find it in
 `our examples repo
-<https://github.com/edgedb/edgedb-examples/tree/main/fastapi-crud>`_. If you're
-stuck or if you just want to show off what you've built, come talk to us `on
-Discord <https://discord.gg/umUueND6ag>`_. It's a great community of helpful
-folks, all passionate about being part of the next generation of databases.
+<https://github.com/edgedb/edgedb-examples/tree/main/fastapi-crud>`_. We also 
+have a separate example that demonstrates how to integrate EdgeDB Auth with
+FastAPI in the same repo. Check it out 
+`here <https://github.com/edgedb/edgedb-examples/tree/main/fastapi-crud-auth>`_.
+If you're stuck or if you just want to show off what you've built, come talk 
+to us `on Discord <https://discord.gg/umUueND6ag>`_. It's a great community of 
+helpful folks, all passionate about being part of the next generation of 
+databases.
 
 If you like what you see and want to dive deeper into EdgeDB and what it can
-do, check out our `Easy EdgeDB book <https://www.edgedb.com/easy-edgedb>`_. In
+do, check out our `Easy EdgeDB book </easy-edgedb>`_. In
 it, you'll get to learn more about EdgeDB as we build an imaginary role-playing
 game based on Bram Stoker's Dracula.

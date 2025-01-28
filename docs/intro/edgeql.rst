@@ -15,8 +15,8 @@ execute them directly from the browser.
 .. note::
 
   The examples below also demonstrate how to express the query with the
-  :ref:`TypeScript query builder <edgedb-js-qb>`, which lets you express
-  arbitrary EdgeQL queries in a code-first, typesafe way.
+  :ref:`TypeScript client's <edgedb-js-intro>` query builder, which lets you
+  express arbitrary EdgeQL queries in a code-first, typesafe way.
 
 
 Scalar literals
@@ -31,7 +31,8 @@ EdgeDB has a rich primitive type system consisting of the following data types.
   * - Booleans
     - ``bool``
   * - Numbers
-    - ``int32`` ``int64`` ``float32`` ``float64`` ``bigint`` ``decimal``
+    - ``int16`` ``int32`` ``int64`` ``float32`` ``float64`` 
+      ``bigint`` ``decimal``
   * - UUID
     - ``uuid``
   * - JSON
@@ -127,7 +128,7 @@ nested.
     db> select ('Apple', 7, true);
     {('Apple', 7, true)} # unnamed tuple
     db> select (fruit := 'Apple', quantity := 3.14, fresh := true);
-    {(fruit := 'Apple', quantity := 3.14, fresh := true)} # unnamed tuple
+    {(fruit := 'Apple', quantity := 3.14, fresh := true)} # named tuple
     db> select <json>["this", "is", "an", "array"];
     {"[\"this\", \"is\", \"an\", \"array\"]"}
 
@@ -457,8 +458,8 @@ like any good programming language.
 
   .. code-tab:: typescript
 
-    const newMovie = e.insert({
-      title := "The Marvels"
+    const newMovie = e.insert(e.Movie, {
+      title: "The Marvels"
     });
     const query = e.select(newMovie, () => ({
       id: true,
@@ -541,8 +542,8 @@ known as a *backlink* and it has special syntax.
     }));
     // {name: string; acted_in: {title: string}[];}[]
 
-See :ref:`Docs > EdgeQL > Select > Computed <ref_eql_select>` and
-:ref:`Docs > EdgeQL > Select > Backlinks <ref_eql_select>`.
+See :ref:`Docs > EdgeQL > Select > Computed fields <ref_eql_select_computeds>` and
+:ref:`Docs > EdgeQL > Select > Backlinks <ref_eql_select_backlinks>`.
 
 Update objects
 ^^^^^^^^^^^^^^
@@ -611,7 +612,7 @@ The ``delete`` statement can contain ``filter``, ``order by``, ``offset``, and
   .. code-tab:: edgeql
 
     delete Movie
-    filter .ilike "the avengers%"
+    filter .title ilike "the avengers%"
     limit 3;
 
   .. code-tab:: typescript
@@ -683,7 +684,6 @@ executing a query.
     client = edgedb.create_async_client()
 
     async def main():
-
         result = await client.query("select <str>$param", param="Play it, Sam")
         # => "Play it, Sam"
 
@@ -714,6 +714,25 @@ executing a query.
         query := "select <str>$0"
         err = client.Query(ctx, query, &result, param)
         // ...
+    }
+
+  .. code-tab:: rust
+
+    // [dependencies]
+    // edgedb-tokio = "0.5.0"
+    // tokio = { version = "1.28.1", features = ["macros", "rt-multi-thread"] }
+
+    #[tokio::main]
+    async fn main() {
+        let conn = edgedb_tokio::create_client()
+            .await
+            .expect("Client initiation");
+        let param = "Play it, Sam.";
+        let val = conn
+            .query_required_single::<String, _>("select <str>$0", &(param,))
+            .await
+            .expect("Returning value");
+        println!("{val}");
     }
 
 See :ref:`Docs > EdgeQL > Parameters <ref_eql_params>`.
@@ -799,18 +818,33 @@ Polymorphic queries
 Consider the following schema.
 
 .. code-block:: sdl
+    :version-lt: 3.0
 
-  abstract type Content {
-    required property title -> str;
-  }
+    abstract type Content {
+      required property title -> str;
+    }
 
-  type Movie extending Content {
-    property release_year -> int64;
-  }
+    type Movie extending Content {
+      property release_year -> int64;
+    }
 
-  type TVShow extending Content {
-    property num_seasons -> int64;
-  }
+    type TVShow extending Content {
+      property num_seasons -> int64;
+    }
+
+.. code-block:: sdl
+
+    abstract type Content {
+      required title: str;
+    }
+
+    type Movie extending Content {
+      release_year: int64;
+    }
+
+    type TVShow extending Content {
+      num_seasons: int64;
+    }
 
 We can ``select`` the abstract type ``Content`` to simultaneously fetch all
 objects that extend it, and use the ``[is <type>]`` syntax to select

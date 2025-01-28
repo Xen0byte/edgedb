@@ -65,11 +65,7 @@ __all__ = ('Registry', 'Unit', 'calc_buckets')
 
 
 def calc_buckets(
-    start: float,
-    upper_bound: float,
-    /,
-    *,
-    increment_ratio: float = 1.20
+    start: float, upper_bound: float, /, *, increment_ratio: float = 1.20
 ) -> tuple[float, ...]:
     """Calculate histogram buckets on a logarithmic scale."""
     # See https://amplitude.com/blog/2014/08/06/optimal-streaming-histograms
@@ -118,13 +114,7 @@ class Registry:
     def now(self) -> float:
         return time.time()
 
-    def set_info(
-        self,
-        name: str,
-        desc: str,
-        /,
-        **kwargs: str
-    ) -> None:
+    def set_info(self, name: str, desc: str, /, **kwargs: str) -> None:
         self._add_metric(Info(self, name, desc, **kwargs))
 
     def new_counter(
@@ -145,7 +135,7 @@ class Registry:
         desc: str,
         /,
         *,
-        labels: tuple[str],
+        labels: tuple[str, ...],
         unit: Unit | None = None,
     ) -> LabeledCounter:
         counter = LabeledCounter(self, name, desc, unit, labels=labels)
@@ -171,7 +161,7 @@ class Registry:
         /,
         *,
         unit: Unit | None = None,
-        labels: tuple[str],
+        labels: tuple[str, ...],
     ) -> LabeledGauge:
         gauge = LabeledGauge(self, name, desc, unit, labels=labels)
         self._add_metric(gauge)
@@ -190,10 +180,26 @@ class Registry:
         self._add_metric(hist)
         return hist
 
-    def generate(self) -> str:
+    def new_labeled_histogram(
+        self,
+        name: str,
+        desc: str,
+        /,
+        *,
+        unit: Unit | None = None,
+        buckets: list[float] | None = None,
+        labels: tuple[str, ...],
+    ) -> LabeledHistogram:
+        hist = LabeledHistogram(
+            self, name, desc, unit, buckets=buckets, labels=labels
+        )
+        self._add_metric(hist)
+        return hist
+
+    def generate(self, **label_filters: str) -> str:
         buffer: list[str] = []
         for metric in self._metrics:
-            metric._generate(buffer)
+            metric._generate(buffer, **label_filters)
         buffer.append('')
         return '\n'.join(buffer)
 
@@ -259,9 +265,7 @@ class BaseMetric:
                 raise ValueError(f'invalid label name: {label!r}')
 
     def _validate_label_values(
-        self,
-        labels: tuple[str, ...],
-        values: tuple[str, ...]
+        self, labels: tuple[str, ...], values: tuple[str, ...]
     ) -> None:
         if len(values) != len(labels):
             raise ValueError(
@@ -270,7 +274,31 @@ class BaseMetric:
             if not val:
                 raise ValueError(f'empty value for label {name!r}')
 
-    def _generate(self, buffer: list[str]) -> None:
+    def _make_label_filter(
+        self,
+        labels: tuple[str, ...],
+        label_filters: dict[str, str],
+    ) -> typing.Callable[[tuple[str, ...]], bool]:
+        if not label_filters:
+            return lambda _: True
+
+        try:
+            label_by_idx = [
+                (labels.index(label), label_val)
+                for label, label_val in label_filters.items()
+            ]
+        except ValueError:
+            return lambda _: False
+
+        def label_filter(label_values: tuple[str, ...]) -> bool:
+            for idx, label_val in label_by_idx:
+                if label_values[idx] != label_val:
+                    return False
+            return True
+
+        return label_filter
+
+    def _generate(self, buffer: list[str], **label_filters: str) -> None:
         raise NotImplementedError
 
 
@@ -283,16 +311,15 @@ class Info(BaseMetric):
     _registry: Registry
     _labels: dict[str, str]
 
-    def __init__(
-        self,
-        *args: typing.Any,
-        **labels: str
-    ) -> None:
+    def __init__(self, *args: typing.Any, **labels: str) -> None:
         super().__init__(*args)
         self._validate_label_names(tuple(labels.keys()))
         self._labels = labels
 
-    def _generate(self, buffer: list[str]) -> None:
+    def _generate(self, buffer: list[str], **label_filters: str) -> None:
+        if label_filters:
+            return
+
         desc = _format_desc(self._desc)
 
         buffer.append(f'# HELP {self._name}_info {desc}')
@@ -324,7 +351,10 @@ class BaseCounter(BaseMetric):
                 'counter cannot be incremented with a negative value')
         self._value += value
 
-    def _generate(self, buffer: list[str]) -> None:
+    def _generate(self, buffer: list[str], **label_filters: str) -> None:
+        if label_filters:
+            return
+
         desc = _format_desc(self._desc)
 
         buffer.append(f'# HELP {self._name}{self._suffix} {desc}')
@@ -366,13 +396,16 @@ class BaseLabeledCounter(BaseMetric):
             self._metric_values[labels] = value
             self._metric_created[labels] = self._registry.now()
 
-    def _generate(self, buffer: list[str]) -> None:
+    def _generate(self, buffer: list[str], **label_filters: str) -> None:
         desc = _format_desc(self._desc)
 
         buffer.append(f'# HELP {self._name}{self._suffix} {desc}')
         buffer.append(f'# TYPE {self._name}{self._suffix} {self._type}')
 
+        filter_func = self._make_label_filter(self._labels, label_filters)
         for labels, value in self._metric_values.items():
+            if not filter_func(labels):
+                continue
             fmt_label = ','.join(
                 f'{label}="{_format_label_val(label_val)}"'
                 for label, label_val in zip(self._labels, labels)
@@ -386,6 +419,8 @@ class BaseLabeledCounter(BaseMetric):
             buffer.append(f'# TYPE {self._name}_created gauge')
 
             for labels, value in self._metric_created.items():
+                if not filter_func(labels):
+                    continue
                 fmt_label = ','.join(
                     f'{label}="{_format_label_val(label_val)}"'
                     for label, label_val in zip(self._labels, labels)
@@ -457,13 +492,11 @@ class LabeledGauge(BaseLabeledCounter):
             self._metric_created[labels] = self._registry.now()
 
 
-class Histogram(BaseMetric):
+class BaseHistogram(BaseMetric):
 
     _type = 'histogram'
 
     _buckets: list[float]
-    _values: list[float]
-    _sum: float
 
     # Default buckets that many standard prometheus client libraries use.
     DEFAULT_BUCKETS = [
@@ -472,9 +505,7 @@ class Histogram(BaseMetric):
     ]
 
     def __init__(
-        self,
-        *args: typing.Any,
-        buckets: list[float] | None = None
+        self, *args: typing.Any, buckets: list[float] | None = None
     ) -> None:
         if buckets is None:
             buckets = self.DEFAULT_BUCKETS
@@ -490,8 +521,19 @@ class Histogram(BaseMetric):
 
         super().__init__(*args)
 
-        self._sum = 0.0
         self._buckets = buckets
+
+
+class Histogram(BaseHistogram):
+
+    _values: list[float]
+    _sum: float
+
+    def __init__(
+        self, *args: typing.Any, buckets: list[float] | None = None
+    ) -> None:
+        super().__init__(*args, buckets=buckets)
+        self._sum = 0.0
         self._values = [0.0] * len(self._buckets)
 
     def observe(self, value: float) -> None:
@@ -499,7 +541,10 @@ class Histogram(BaseMetric):
         self._values[idx] += 1.0
         self._sum += value
 
-    def _generate(self, buffer: list[str]) -> None:
+    def _generate(self, buffer: list[str], **label_filters: str) -> None:
+        if label_filters:
+            return
+
         desc = _format_desc(self._desc)
 
         buffer.append(f'# HELP {self._name} {desc}')
@@ -525,6 +570,85 @@ class Histogram(BaseMetric):
         buffer.append(f'# HELP {self._name}_created {desc}')
         buffer.append(f'# TYPE {self._name}_created gauge')
         buffer.append(f'{self._name}_created {float(self._created)}')
+
+
+class LabeledHistogram(BaseHistogram):
+
+    _labels: tuple[str, ...]
+    _metric_values: dict[tuple[str, ...], list[float | list[float]]]
+    _metric_created: dict[tuple[str, ...], float]
+
+    def __init__(
+        self,
+        *args: typing.Any,
+        buckets: list[float] | None = None,
+        labels: tuple[str, ...],
+    ) -> None:
+        super().__init__(*args, buckets=buckets)
+        self._labels = labels
+        self._metric_values = {}
+        self._metric_created = {}
+
+    def observe(self, value: float, *labels: str) -> None:
+        self._validate_label_values(self._labels, labels)
+
+        try:
+            metric = self._metric_values[labels]
+        except KeyError:
+            metric = [0.0, [0.0] * len(self._buckets)]
+            self._metric_values[labels] = metric
+            self._metric_created[labels] = self._registry.now()
+
+        idx = bisect.bisect_left(self._buckets, value)
+        metric[1][idx] += 1.0  # type: ignore
+        metric[0] += value  # type: ignore
+
+    def _generate(self, buffer: list[str], **label_filters: str) -> None:
+        desc = _format_desc(self._desc)
+
+        buffer.append(f'# HELP {self._name} {desc}')
+        buffer.append(f'# TYPE {self._name} histogram')
+
+        filter_func = self._make_label_filter(self._labels, label_filters)
+        for labels, values in self._metric_values.items():
+            if not filter_func(labels):
+                continue
+            fmt_label = ','.join(
+                f'{label}="{_format_label_val(label_val)}"'
+                for label, label_val in zip(self._labels, labels)
+            )
+            accum = 0.0
+            for buck, val in zip(self._buckets, values[1]):  # type: ignore
+                accum += val
+
+                if math.isinf(buck):
+                    if buck > 0:
+                        buckf = '+Inf'
+                    else:
+                        buckf = '-Inf'
+                else:
+                    buckf = str(buck)
+
+                buffer.append(
+                    f'{self._name}_bucket{{le="{buckf}",{fmt_label}}} {accum}'
+                )
+
+            buffer.append(f'{self._name}_count{{{fmt_label}}} {accum}')
+            buffer.append(f'{self._name}_sum{{{fmt_label}}} {values[0]}')
+
+        if self._metric_values:
+            buffer.append(f'# HELP {self._name}_created {desc}')
+            buffer.append(f'# TYPE {self._name}_created gauge')
+            for labels, value in self._metric_created.items():
+                if not filter_func(labels):
+                    continue
+                fmt_label = ','.join(
+                    f'{label}="{_format_label_val(label_val)}"'
+                    for label, label_val in zip(self._labels, labels)
+                )
+                buffer.append(
+                    f'{self._name}_created{{{fmt_label}}} {float(value)}'
+                )
 
 
 @functools.lru_cache(maxsize=1024)

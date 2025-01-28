@@ -28,6 +28,8 @@ from edb.testbase import server as tb
 class TestEdgeQLPolicies(tb.QueryTestCase):
     '''Tests for policies.'''
 
+    NO_FACTOR = True
+
     SCHEMA = os.path.join(os.path.dirname(__file__), 'schemas',
                           'issues.esdl')
 
@@ -65,6 +67,7 @@ class TestEdgeQLPolicies(tb.QueryTestCase):
                       (global cur_user IN __subject__.watchers.name) ?? false
                   )
             };
+            create function count_Issue() -> int64 using (count(Issue));
 
             create type CurOnly extending Dictionary {
                 create access policy cur_only allow all
@@ -917,10 +920,10 @@ class TestEdgeQLPolicies(tb.QueryTestCase):
             alter type Issue {
                 create access policy foo_1 deny all using (
                     not exists (select .watchers { foo := .todo }
-                                filter .foo.name = "x"));
+                                filter "x" in .foo.name));
                 create access policy foo_2 deny all using (
                     not exists (select .watchers { todo }
-                                filter .todo.name = "x"));
+                                filter "x" in .todo.name));
              };
         ''')
 
@@ -939,6 +942,93 @@ class TestEdgeQLPolicies(tb.QueryTestCase):
                     name := '', body := '', status := {}, number := '',
                     owner := {}};
             ''')
+
+    async def test_edgeql_policies_volatile_01(self):
+        await self.con.execute('''
+            create type Bar {
+                create required property r -> float64;
+                create access policy ok allow all;
+                create access policy no deny
+                    update write, insert using (.r <= 0.5);
+            };
+        ''')
+
+        for _ in range(10):
+            async with self._run_and_rollback():
+                try:
+                    await self.con.execute('''
+                        insert Bar { r := random() };
+                    ''')
+                except edgedb.AccessPolicyError:
+                    # If it failed, nothing to do, keep trying
+                    pass
+                else:
+                    r = (await self.con.query('''
+                        select Bar.r
+                    '''))[0]
+                    self.assertGreater(r, 0.5)
+
+        await self.con.execute('''
+            insert Bar { r := 1.0 };
+        ''')
+        for _ in range(10):
+            async with self._run_and_rollback():
+                try:
+                    await self.con.execute('''
+                        update Bar set { r := random() };
+                    ''')
+                except edgedb.AccessPolicyError:
+                    # If it failed, nothing to do, keep trying
+                    pass
+                else:
+                    r = (await self.con.query('''
+                        select Bar.r
+                    '''))[0]
+                    self.assertGreater(r, 0.5)
+
+    async def test_edgeql_policies_volatile_02(self):
+        # Same as above but multi
+        await self.con.execute('''
+            create type Bar {
+                create required multi property r -> float64;
+                create access policy ok allow all;
+                create access policy no deny
+                    update write, insert using (all(.r <= 0.5));
+            };
+        ''')
+
+        for _ in range(10):
+            async with self._run_and_rollback():
+                try:
+                    await self.con.execute('''
+                        insert Bar { r := random() };
+                    ''')
+                except edgedb.AccessPolicyError:
+                    # If it failed, nothing to do, keep trying
+                    pass
+                else:
+                    r = (await self.con.query('''
+                        select Bar.r
+                    '''))[0]
+                    self.assertGreater(r, 0.5)
+
+        await self.con.execute('''
+            insert Bar { r := 1.0 };
+        ''')
+        for _ in range(10):
+            async with self._run_and_rollback():
+                try:
+                    await self.con.execute('''
+                        update Bar set { r := random() };
+                    ''')
+                except edgedb.AccessPolicyError:
+                    # If it failed, nothing to do, keep trying
+                    pass
+                else:
+                    r = (await self.con.query('''
+                        select Bar.r
+                    '''))[0]
+                    self.assertGreater(r, 0.5)
 
     async def test_edgeql_policies_messages(self):
         await self.con.execute(
@@ -1019,4 +1109,246 @@ class TestEdgeQLPolicies(tb.QueryTestCase):
         await self.assert_query_result(
             r'''select X''',
             [{}],
+        )
+
+    async def test_edgeql_policies_function_01(self):
+        await self.con.execute('''
+            set global filter_owned := true;
+        ''')
+        await self.assert_query_result(
+            r'''select (count(Issue), count_Issue())''',
+            [(0, 0)],
+        )
+
+        await self.con.execute('''
+            configure session set apply_access_policies := false;
+        ''')
+        await self.assert_query_result(
+            r'''select (count(Issue), count_Issue())''',
+            [(4, 4)],
+        )
+
+    async def test_edgeql_policies_complex_01(self):
+        await self.migrate(
+            """
+            abstract type Auditable {
+                access policy auditable_default
+                    allow all ;
+                access policy auditable_prohibit_hard_deletes
+                    deny delete  {
+                        errmessage := 'hard deletes are disallowed';
+                    };
+                delegated constraint std::expression on
+                    ((.updated_at >= .created_at))
+                    except (NOT (EXISTS (.updated_at)));
+                delegated constraint std::expression on
+                    ((.deleted_at > .created_at))
+                    except (NOT (EXISTS (.deleted_at)));
+                required property created_at: std::datetime {
+                    default := (std::datetime_of_statement());
+                    readonly := true;
+                };
+                property deleted_at: std::datetime;
+                required property uid: std::str {
+                    default := <str>random();
+                    readonly := true;
+                    constraint std::exclusive;
+                };
+                property updated_at: std::datetime {
+                    rewrite
+                        update
+                        using (std::datetime_of_statement());
+                };
+            };
+            type Avatar extending default::Auditable {
+                link owner := (.<avatar[is default::Member]);
+                required property url: std::str;
+            };
+            type Member extending default::Auditable {
+                link avatar: default::Avatar {
+                    on source delete delete target if orphan;
+                    on target delete allow;
+                    constraint std::exclusive;
+                };
+            };
+            """
+        )
+        await self.con.execute(
+            '''
+            update Avatar set {deleted_at:=datetime_of_statement()};
+            '''
+        )
+
+    async def test_edgeql_policies_optional_leakage_01(self):
+        await self.con.execute(
+            '''
+            CREATE GLOBAL current_user -> uuid;
+            CREATE TYPE Org {
+                CREATE REQUIRED PROPERTY domain -> str {
+                    CREATE CONSTRAINT exclusive;
+                };
+                CREATE PROPERTY name -> str;
+            };
+            CREATE TYPE User2 {
+                CREATE REQUIRED LINK org -> Org;
+                CREATE REQUIRED PROPERTY email -> str {
+                    CREATE CONSTRAINT exclusive;
+                };
+            };
+            CREATE GLOBAL current_user_object := (SELECT
+                User2
+            FILTER
+                (.id = GLOBAL current_user)
+            );
+            CREATE TYPE Src {
+                CREATE REQUIRED SINGLE LINK org -> Org;
+                CREATE SINGLE LINK user -> User2;
+
+                CREATE ACCESS POLICY deny_no
+                    DENY ALL USING (
+                      (((GLOBAL current_user_object).org != .org) ?? true));
+                CREATE ACCESS POLICY yes
+                    ALLOW ALL USING (SELECT
+                        ((GLOBAL current_user = .user.id) ?? false)
+                    );
+            };
+            '''
+        )
+
+        await self.con.execute('''
+            configure session set apply_access_policies := false;
+        ''')
+
+        await self.con.execute('''
+            insert User2 {
+                email:= "a@a.com",
+                org:=(insert Org {domain:="a.com"}),
+            };
+        ''')
+        res = await self.con.query_single('''
+            insert User2 {
+                email:= "b@b.com",
+                org:=(insert Org {domain:="b.com"}),
+            };
+        ''')
+        await self.con.execute('''
+            insert Src {
+                org := (select Org filter .domain = "a.com")
+            };
+        ''')
+
+        await self.con.execute('''
+            configure session set apply_access_policies := true;
+        ''')
+
+        await self.con.execute(f'''
+            set global current_user := <uuid>'{res.id}';
+        ''')
+
+        await self.assert_query_result(
+            r'''select Src''',
+            [],
+        )
+
+    async def test_edgeql_policies_parent_update_01(self):
+        await self.con.execute('''
+            CREATE ABSTRACT TYPE Base {
+                CREATE PROPERTY name: std::str;
+                CREATE ACCESS POLICY sel_ins
+                    ALLOW SELECT, INSERT USING (true);
+            };
+            CREATE TYPE Child EXTENDING Base;
+
+            INSERT Child;
+        ''')
+
+        await self.assert_query_result(
+            '''
+            update Base set { name := '!!!' }
+            ''',
+            [],
+        )
+
+        await self.assert_query_result(
+            '''
+            delete Base
+            ''',
+            [],
+        )
+
+        await self.con.execute('''
+            ALTER TYPE Base {
+                CREATE ACCESS POLICY upd_read
+                    ALLOW UPDATE READ USING (true);
+            };
+        ''')
+
+        async with self.assertRaisesRegexTx(
+                edgedb.InvalidValueError,
+                r"access policy violation on update"):
+            await self.con.query('''
+                update Base set { name := '!!!' }
+            ''')
+
+    async def test_edgeql_policies_empty_cast_01(self):
+        obj = await self.con._fetchall(
+            '''
+                SELECT <Issue>{}
+            ''',
+            __typenames__=True,
+        )
+        self.assertEqual(obj, [])
+
+    async def test_edgeql_policies_global_01(self):
+        # GH issue #6404
+
+        clan_and_global = '''
+            type Clan {
+                access policy allow_select_players
+                    allow select
+                    using (
+                        global current_player.clan.id ?= .id
+                    );
+            };
+            global current_player_id: uuid;
+            global current_player := (
+                select Player filter .id = global current_player_id
+            );
+        '''
+
+        await self.migrate(
+            '''
+            type Principal;
+            type Player extending Principal {
+                required link clan: Clan;
+            }
+            ''' + clan_and_global
+        )
+
+        await self.migrate(
+            '''
+            type Player {
+                required link clan: Clan;
+            }
+            ''' + clan_and_global
+        )
+
+    async def test_edgeql_policies_global_02(self):
+        await self.con.execute('''
+            create type T {
+                create access policy ok allow all;
+                create access policy no deny select;
+            };
+            insert T;
+            create global foo := (select T limit 1);
+            create type S {
+                create access policy ok allow all using (exists global foo)
+            };
+        ''')
+
+        await self.assert_query_result(
+            r'''
+            select { s := S, foo := global foo };
+            ''',
+            [{"s": [], "foo": None}]
         )

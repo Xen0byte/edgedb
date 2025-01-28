@@ -70,6 +70,19 @@ Generic
         db> select 'hello' = 'world';
         {false}
 
+    .. warning::
+
+        When either operand in an equality comparison is an empty set, the
+        result will not be a ``bool`` but instead an empty set.
+
+        .. code-block:: edgeql-repl
+
+            db> select true = <bool>{};
+            {}
+
+        If one of the operands in an equality comparison could be an empty set,
+        you may want to use the :eql:op:`coalescing equality <coaleq>` operator
+        (``?=``) instead.
 
 ----------
 
@@ -93,6 +106,20 @@ Generic
         {false}
         db> select 'hello' != 'world';
         {true}
+
+    .. warning::
+
+        When either operand in an inequality comparison is an empty set, the
+        result will not be a ``bool`` but instead an empty set.
+
+        .. code-block:: edgeql-repl
+
+            db> select true != <bool>{};
+            {}
+
+        If one of the operands in an inequality comparison could be an empty
+        set, you may want to use the :eql:op:`coalescing inequality <coaleq>`
+        operator (``?!=``) instead.
 
 
 ----------
@@ -156,6 +183,26 @@ Generic
         db> select (1, 'hello') < (1, 'world');
         {true}
 
+    .. warning::
+
+        When either operand in a comparison is an empty set, the result will
+        not be a ``bool`` but instead an empty set.
+
+        .. code-block:: edgeql-repl
+
+            db> select 1 < <int16>{};
+            {}
+
+        If one of the operands in a comparison could be an empty set, you may
+        want to coalesce the result of the comparison with ``false`` to ensure
+        your result is boolean.
+
+        .. code-block:: edgeql-repl
+
+            db> select (1 < <int16>{}) ?? false;
+            {false}
+
+
 ----------
 
 
@@ -176,6 +223,25 @@ Generic
         {false}
         db> select (1, 'hello') > (1, 'world');
         {false}
+
+    .. warning::
+
+        When either operand in a comparison is an empty set, the result will
+        not be a ``bool`` but instead an empty set.
+
+        .. code-block:: edgeql-repl
+
+            db> select 1 > <int16>{};
+            {}
+
+        If one of the operands in a comparison could be an empty set, you may
+        want to coalesce the result of the comparison with ``false`` to ensure
+        your result is boolean.
+
+        .. code-block:: edgeql-repl
+
+            db> select (1 > <int16>{}) ?? false;
+            {false}
 
 
 ----------
@@ -201,6 +267,25 @@ Generic
         db> select (1, 'hello') <= (1, 'world');
         {true}
 
+    .. warning::
+
+        When either operand in a comparison is an empty set, the result will
+        not be a ``bool`` but instead an empty set.
+
+        .. code-block:: edgeql-repl
+
+            db> select 1 <= <int16>{};
+            {}
+
+        If one of the operands in a comparison could be an empty set, you may
+        want to coalesce the result of the comparison with ``false`` to ensure
+        your result is boolean.
+
+        .. code-block:: edgeql-repl
+
+            db> select (1 <= <int16>{}) ?? false;
+            {false}
+
 
 ----------
 
@@ -224,6 +309,25 @@ Generic
         {false}
         db> select (1, 'hello') >= (1, 'world');
         {false}
+
+    .. warning::
+
+        When either operand in a comparison is an empty set, the result will
+        not be a ``bool`` but instead an empty set.
+
+        .. code-block:: edgeql-repl
+
+            db> select 1 >= <int16>{};
+            {}
+
+        If one of the operands in a comparison could be an empty set, you may
+        want to coalesce the result of the comparison with ``false`` to ensure
+        your result is boolean.
+
+        .. code-block:: edgeql-repl
+
+            db> select (1 >= <int16>{}) ?? false;
+            {false}
 
 
 ----------
@@ -265,6 +369,15 @@ Generic
                   std::contains(haystack: range<anypoint>, \
                                 needle: anypoint) \
                   -> std::bool
+                  std::contains(haystack: multirange<anypoint>, \
+                                needle: multirange<anypoint>) \
+                  -> std::bool
+                  std::contains(haystack: multirange<anypoint>, \
+                                needle: range<anypoint>) \
+                  -> std::bool
+                  std::contains(haystack: multirange<anypoint>, \
+                                needle: anypoint) \
+                  -> std::bool
 
     :index: find strpos strstr position array
 
@@ -297,10 +410,10 @@ Generic
 
     .. code-block:: edgeql-repl
 
-        db> select contains(range(1, 10), range(2,5));
+        db> select contains(range(1, 10), range(2, 5));
         {true}
 
-        db> select contains(range(1, 10), range(2,15));
+        db> select contains(range(1, 10), range(2, 15));
         {false}
 
         db> select contains(range(1, 10), 2);
@@ -308,6 +421,54 @@ Generic
 
         db> select contains(range(1, 10), 10);
         {false}
+
+    When *haystack* is a :ref:`multirange <ref_std_multirange>`, the function
+    will return ``true`` if it contains either the specified multirange,
+    sub-range or element. The function will return ``false`` otherwise.
+
+    .. code-block:: edgeql-repl
+
+        db> select contains(
+        ...   multirange([
+        ...     range(1, 4), range(7),
+        ...   ]),
+        ...   multirange([
+        ...     range(1, 2), range(8, 10),
+        ...   ]),
+        ... );
+        {true}
+
+        db> select contains(
+        ...   multirange([
+        ...     range(1, 4), range(8, 10),
+        ...   ]),
+        ...   range(8),
+        ... );
+        {false}
+
+        db> select contains(
+        ...   multirange([
+        ...     range(1, 4), range(8, 10),
+        ...   ]),
+        ...   3,
+        ... );
+        {true}
+
+    When *haystack* is :ref:`JSON <ref_std_json>`, the function will return
+    ``true`` if the json data contains the element specified as *needle* or
+    ``false`` otherwise:
+
+    .. code-block:: edgeql-repl
+
+        db> with haystack := to_json('{
+        ...   "city": "Baerlon",
+        ...   "city": "Caemlyn"
+        ... }'),
+        ... needle := to_json('{
+        ...   "city": "Caemlyn"
+        ... }'),
+        ... select contains(haystack, needle);
+        {true}
 
 
 ----------

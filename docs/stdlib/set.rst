@@ -20,6 +20,12 @@ Sets
     * - :eql:op:`set union set <union>`
       - :eql:op-desc:`union`
 
+    * - :eql:op:`set intersect set <intersect>`
+      - :eql:op-desc:`intersect`
+
+    * - :eql:op:`set except set <except>`
+      - :eql:op-desc:`except`
+
     * - :eql:op:`exists set <exists>`
       - :eql:op-desc:`exists`
 
@@ -157,6 +163,42 @@ Sets
 ----------
 
 
+.. eql:operator:: intersect: set of anytype intersect set of anytype \
+                                -> set of anytype
+
+    .. versionadded:: 3.0
+
+    Produces a set containing the common items between the given sets.
+
+    .. note::
+
+        The ordering of the returned set may not match that of the operands.
+
+    If you need a distinct intersection, wrap it with the :eql:op:`distinct`
+    operator.
+
+
+----------
+
+
+.. eql:operator:: except: set of anytype except set of anytype \
+                                -> set of anytype
+
+    .. versionadded:: 3.0
+
+    Produces a set of all items in the first set which are not in the second.
+
+    .. note::
+
+        The ordering of the returned set may not match that of the operands.
+
+    If you need a distinct set of exceptions, wrap it with the
+    :eql:op:`distinct` operator.
+
+
+----------
+
+
 .. eql:operator:: if..else: set of anytype if bool else set of anytype \
                                 -> set of anytype
 
@@ -175,8 +217,8 @@ Sets
 
     .. code-block:: edgeql-repl
 
-        db> select 'hello' if 2 * 2 = 4 else 'bye';
-        {'hello'}
+        db> select 'real life' if 2 * 2 = 4 else 'dream';
+        {'real life'}
 
     ``if..else`` expressions can be chained when checking multiple conditions
     is necessary:
@@ -190,8 +232,85 @@ Sets
         ...        'Other';
         {'Banana'}
 
+    It can be used to create, update, or delete different objects based on
+    some condition:
+
+    .. code-block:: edgeql
+    
+        with
+          name := <str>$0,
+          admin := <bool>$1
+        select (insert AdminUser { name := name }) if admin
+          else (insert User { name := name });
+
+    .. note::
+
+        DML (i.e., :ref:`insert <ref_eql_insert>`, :ref:`update
+        <ref_eql_update>`, :ref:`delete <ref_eql_delete>`) was not supported
+        in ``if...else`` prior to EdgeDB 4.0. If you need to do one of these
+        on an older version of EdgeDB, you can use a 
+        :ref:`for loop conditional <ref_eql_for_conditional_dml>` as a
+        workaround.
+
+
 -----------
 
+
+.. eql:operator:: if..then..else: if bool then set of anytype else set of \
+                                anytype -> set of anytype
+
+    .. versionadded:: 4.0
+
+    Produces one of two possible results based on a given condition.
+    
+    Uses ``then`` for an alternative syntax order to ``if..else`` above.
+
+    .. eql:synopsis::
+
+        if <condition> then <left_expr> else <right_expr>
+
+    If the :eql:synopsis:`<condition>` is ``true``, the ``if...else``
+    expression produces the value of the :eql:synopsis:`<left_expr>`. If the
+    :eql:synopsis:`<condition>` is ``false``, however, the ``if...else``
+    expression produces the value of the :eql:synopsis:`<right_expr>`.
+
+    .. code-block:: edgeql-repl
+
+        db> select if 2 * 2 = 4 then 'real life' else 'dream';
+        {'real life'}
+
+    ``if..else`` expressions can be chained when checking multiple conditions
+    is necessary:
+
+    .. code-block:: edgeql-repl
+
+        db> with color := 'yellow', select
+        ... if color = 'red' then
+        ...   'Apple'
+        ... else if color = 'yellow' then
+        ...   'Banana'
+        ... else if color = 'orange' then
+        ...   'Orange'
+        ... else
+        ...   'Other';
+        {'Banana'}
+
+    It can be used to create, update, or delete different objects based on
+    some condition:
+
+    .. code-block:: edgeql
+    
+        with
+          name := <str>$0,
+          admin := <bool>$1
+        select if admin then (
+            insert AdminUser { name := name }
+        ) else (
+            insert User { name := name }
+        )
+
+
+-----------
 
 .. eql:operator:: coalesce: optional anytype ?? set of anytype \
                               -> set of anytype
@@ -213,6 +332,14 @@ Sets
     Without the coalescing operator, the above query will skip any
     ``Issue`` without priority.
 
+    As of EdgeDB 4.0, the coalescing operator can be used to express
+    things like "select or insert if missing":
+  
+    .. code-block:: edgeql
+
+        select 
+          (select User filter .name = 'Alice') ??
+          (insert User { name := 'Alice' }); 
 
 ----------
 
@@ -304,6 +431,7 @@ Sets
     Consider the following types:
 
     .. code-block:: sdl
+        :version-lt: 3.0
 
         type User {
             required property name -> str;
@@ -319,6 +447,24 @@ Sets
 
         type Comment extending Owned {
             required property body -> str;
+        }
+
+    .. code-block:: sdl
+
+        type User {
+            required name: str;
+        }
+
+        abstract type Owned {
+            required owner: User;
+        }
+
+        type Issue extending Owned {
+            required title: str;
+        }
+
+        type Comment extending Owned {
+            required body: str;
         }
 
     The following expression will get all :eql:type:`Objects <Object>`
@@ -337,8 +483,8 @@ Sets
 
         select User.<owner[is Issue];
 
-        # With the use of type intersection it's possible to refer to
-        # specific property of Issue now:
+        # With the use of type intersection it's possible to refer
+        # to a specific property of Issue now:
         select User.<owner[is Issue].title;
 
 
@@ -422,6 +568,12 @@ Sets
 
         db> select assert_single((select User), message := "too many users!")
         ERROR: CardinalityViolationError: too many users!
+
+    .. note::
+
+        ``assert_single`` can be useful in many of the same contexts as ``limit
+        1`` with the key difference being that ``limit 1`` doesn't produce an
+        error if more than a single element exists in the set.
 
 ----------
 

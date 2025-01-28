@@ -35,7 +35,7 @@ abstract type Dictionary extending Named {
     overloaded required name: str {
         delegated constraint exclusive;
     }
-    index on (__subject__.name);
+    index on (.name);
 }
 
 type User extending Dictionary {
@@ -104,6 +104,11 @@ type Issue extending Named, Owned, Text {
     };
 
     tags: array<str>;
+
+    index fts::index on ((
+        fts::with_options(.name, language := fts::Language.eng),
+        fts::with_options(.body, language := fts::Language.eng),
+    ));
 }
 
 # This is used to test correct behavior of boolean operators: NOT,
@@ -124,12 +129,12 @@ type URL extending Named {
 type Publication {
     required title: str;
 
-    property title1 := (SELECT ident(.title));
-    required property title2 := (SELECT ident(.title));
-    required single property title3 := (SELECT ident(.title));
-    optional single property title4 := (SELECT ident(.title));
-    optional multi property title5 := (SELECT ident(.title));
-    required multi property title6 := (SELECT ident(.title));
+    title1 := (SELECT ident(.title));
+    required title2 := (SELECT ident(.title));
+    required single title3 := (SELECT ident(.title));
+    optional single title4 := (SELECT ident(.title));
+    optional multi title5 := (SELECT ident(.title));
+    required multi title6 := (SELECT ident(.title));
 
     multi authors: User {
         list_order: int64;
@@ -156,3 +161,7 @@ function opt_test(tag: bool, x: optional int64) -> int64 using (x ?? -1);
 
 function opt_test(tag: int64, x: int64, y: optional int64) -> int64 using (y ?? -1);
 function opt_test(tag: bool, x: optional int64, y: optional int64) -> int64 using (y ?? -1);
+
+function all_objects() -> SET OF BaseObject {
+    USING (BaseObject)
+}

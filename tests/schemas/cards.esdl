@@ -47,6 +47,7 @@ type User extending Named {
         text: str;
         property tag := .name ++ (("-" ++ @text) ?? "");
     }
+    constraint exclusive on (.avatar);
 }
 
 type Bot extending User;
@@ -54,17 +55,20 @@ type Bot extending User;
 type Card extending Named {
     required element: str;
     required cost: int64;
-    multi link owners := .<deck[IS User];
+    optional text: str;
+    multi owners := .<deck[IS User];
     # computable property
-    property elemental_cost := <str>.cost ++ ' ' ++ .element;
+    elemental_cost := <str>.cost ++ ' ' ++ .element;
     multi awards: Award;
-    multi link good_awards := (SELECT .awards FILTER .name != '3rd');
-    single link best_award := (select .awards order by .name limit 1);
+    multi good_awards := (SELECT .awards FILTER .name != '3rd');
+    single best_award := (select .awards order by .name limit 1);
 }
 
 type SpecialCard extending Card;
 
-type Award extending Named;
+type Award extending Named {
+    link winner := .<awards[is User];
+};
 
 alias AirCard := (
     SELECT Card
@@ -99,22 +103,22 @@ alias EarthOrFireCard {
 
 alias AliceCard := (
     SELECT Card
-    FILTER Card.<deck[IS User].name = 'Alice'
+    FILTER 'Alice' IN Card.<deck[IS User].name
 );
 
 alias BobCard := (
     SELECT Card
-    FILTER Card.<deck[IS User].name = 'Bob'
+    FILTER 'Bob' IN Card.<deck[IS User].name
 );
 
 alias CarolCard := (
     SELECT Card
-    FILTER Card.<deck[IS User].name = 'Carol'
+    FILTER 'Carol' IN Card.<deck[IS User].name
 );
 
 alias DaveCard := (
     SELECT Card
-    FILTER Card.<deck[IS User].name = 'Dave'
+    FILTER 'Dave' IN Card.<deck[IS User].name
 );
 
 alias AliasedFriends := (
@@ -155,3 +159,14 @@ alias UserAlias := (
 alias SpecialCardAlias := SpecialCard {
     el_cost := (.element, .cost)
 };
+
+alias AliasOne := 1;
+global GlobalOne := 1;
+
+global HighestCost := (
+    SELECT max(Card.cost)
+);
+
+global CardsWithText := (
+    SELECT Card FILTER exists(.text)
+);
